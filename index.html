@@ -424,19 +424,32 @@
   }
 
   // ---------- auth persistence (per-device, not shared) ----------
+  // ---------- Google Sheets API ----------
+  var SHEET_URL = 'https://script.google.com/macros/s/AKfycbxGfILq0wakOSSki0IG36a9RxxCL7Wysd3mkn8pz2qeRPw5q_SFMv99RF2KtGchh4moqQ/exec';
+
+  function postToSheet(payload) {
+    return fetch(SHEET_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  // ---------- auth (localStorage - device only) ----------
   function checkAuth(){
-    if(!window.storage){ state.authChecked=true; render(); return; }
-    window.storage.get('rc_auth_session', false).then(function(r){
-      if(r && r.value === 'ok'){ state.authed = true; }
-      state.authChecked = true;
-      if(state.authed) loadPref(); else render();
-    }).catch(function(){ state.authChecked=true; render(); });
+    try {
+      var v = localStorage.getItem('rc_auth_session');
+      if(v === 'ok'){ state.authed = true; }
+    } catch(e){}
+    state.authChecked = true;
+    if(state.authed) loadPref(); else render();
   }
   function tryLogin(user, pass){
     var ok = ACCOUNTS.some(function(a){ return a.user===user && a.pass===pass; });
     if(ok){
       state.authed = true; state.loginError='';
-      try{ window.storage && window.storage.set('rc_auth_session','ok', false); }catch(e){}
+      try{ localStorage.setItem('rc_auth_session','ok'); }catch(e){}
       loadPref();
     } else {
       state.loginError = 'ឈ្មោះអ្នកប្រើ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវ';
@@ -445,48 +458,42 @@
   }
   function logout(){
     state.authed = false;
-    try{ window.storage && window.storage.delete('rc_auth_session', false); }catch(e){}
+    try{ localStorage.removeItem('rc_auth_session'); }catch(e){}
     render();
   }
 
-  // ---------- persisted local preference (per-device, not shared) ----------
+  // ---------- persisted local preference (per-device) ----------
   function savePref(){
     try{
-      window.storage && window.storage.set('pref_last_selection', JSON.stringify({
+      localStorage.setItem('pref_last_selection', JSON.stringify({
         villageCode: state.villageCode, volunteerCode: state.volunteerCode
-      }), false);
+      }));
     }catch(e){}
   }
   function loadPref(){
-    if(!window.storage){ render(); return; }
-    window.storage.get('pref_last_selection', false).then(function(r){
-      if(r && r.value){
-        try{
-          var p = JSON.parse(r.value);
-          if(p.villageCode && villageByCode[p.villageCode]) state.villageCode = p.villageCode;
-          if(p.volunteerCode && volunteerByCode[p.volunteerCode] && volunteerByCode[p.volunteerCode].villageCode === state.villageCode){
-            state.volunteerCode = p.volunteerCode;
-          }
-        }catch(e){}
+    try{
+      var v = localStorage.getItem('pref_last_selection');
+      if(v){
+        var p = JSON.parse(v);
+        if(p.villageCode && villageByCode[p.villageCode]) state.villageCode = p.villageCode;
+        if(p.volunteerCode && volunteerByCode[p.volunteerCode] && volunteerByCode[p.volunteerCode].villageCode === state.villageCode){
+          state.volunteerCode = p.volunteerCode;
+        }
       }
-      render();
-    }).catch(function(){ render(); });
+    }catch(e){}
+    render();
   }
 
-  // ---------- storage helpers for monitoring records ----------
+  // ---------- load last visit for volunteer (localStorage) ----------
   function loadLastForVolunteer(volCode){
-    var kids = childrenByVolunteer[volCode] || [];
-    if(!window.storage || kids.length===0){ render(); return; }
-    state.busy = true; render();
-    window.storage.get('lastmap_'+sanitizeKey(volCode), true).then(function(r){
-      if(r && r.value){
-        try{
-          var map = JSON.parse(r.value);
-          Object.keys(map).forEach(function(code){ state.lastMap[code] = map[code]; });
-        }catch(e){}
+    try{
+      var v = localStorage.getItem('lastmap_'+volCode);
+      if(v){
+        var map = JSON.parse(v);
+        Object.keys(map).forEach(function(code){ state.lastMap[code] = map[code]; });
       }
-      state.busy = false; render();
-    }).catch(function(){ state.busy = false; render(); });
+    }catch(e){}
+    render();
   }
 
   function buildRecord(c, vol){
@@ -507,35 +514,31 @@
     };
   }
 
-  // Auto-save a single child's record right after the volunteer reviews them.
-  // Fires in the background -- the modal closes immediately so the
-  // volunteer never waits on a network round trip per child.
+  // ---------- auto-save single child (localStorage only, fast) ----------
   function autoSaveChild(code){
-    if(!window.storage) return;
     var vol = volunteerByCode[state.volunteerCode];
     var c = DB.children.filter(function(x){ return x.code===code; })[0];
     if(!c || !vol) return;
     var record = buildRecord(c, vol);
     state.lastMap[code] = record;
-    state.savingChild = code;
-    var key = 'mon_' + sanitizeKey(vol.code) + '_' + state.sessionId + '_' + sanitizeKey(code);
-    window.storage.set(key, JSON.stringify(record), true).then(function(){
-      state.childSaved[code] = true;
-      state.savingChild = null;
-      render();
-    }).catch(function(){
-      state.savingChild = null;
-      showToast('មិនអាចរក្សាទុក '+c.name+' បានទេ សូមពិនិត្យអ៊ីនធឺណិត', true);
-    });
+    state.childSaved[code] = true;
+    // save to localStorage as backup
+    try{
+      var key = 'draft_' + vol.code + '_' + state.sessionId;
+      var existing = JSON.parse(localStorage.getItem(key)||'[]');
+      var idx = existing.findIndex(function(r){ return r.childCode === code; });
+      if(idx >= 0) existing[idx] = record; else existing.push(record);
+      localStorage.setItem(key, JSON.stringify(existing));
+    }catch(e){}
+    render();
   }
 
-  // Final step: batch-save any children the volunteer never opened
-  // (they keep their default "Yes" status), refresh the quick lookup
-  // map, and mark the visit complete. At most 3 requests, regardless
-  // of how many children were already auto-saved along the way.
+  // ---------- finish visit: send all to Google Sheets ----------
   function finishVisit(){
     var vol = volunteerByCode[state.volunteerCode];
     var kids = childrenByVolunteer[vol.code] || [];
+
+    // validate No answers have reasons
     for(var i=0;i<kids.length;i++){
       var st = state.childStatus[kids[i].code];
       if(!st) continue;
@@ -549,25 +552,41 @@
         }
       }
     }
+
     state.busy = true; render();
-    var leftover = kids.filter(function(c){ return !state.childSaved[c.code]; });
+
+    // Build all records
+    var allRecords = kids.map(function(c){ return buildRecord(c, vol); });
+
+    // Save lastmap to localStorage
     var lastMapObj = {};
-    kids.forEach(function(c){ lastMapObj[c.code] = buildRecord(c, vol); });
-    var writes = [];
-    if(leftover.length){
-      var batchRecords = leftover.map(function(c){ return buildRecord(c, vol); });
-      var restKey = 'mon_' + sanitizeKey(vol.code) + '_' + state.sessionId + '_rest';
-      writes.push(window.storage.set(restKey, JSON.stringify(batchRecords), true));
-    }
-    writes.push(window.storage.set('lastmap_'+sanitizeKey(vol.code), JSON.stringify(lastMapObj), true));
-    var doneKey = 'sessiondone_' + sanitizeKey(vol.code) + '_' + state.sessionId;
-    writes.push(window.storage.set(doneKey, JSON.stringify({
-      date: state.sessionDate, topics: state.sessionTopics,
-      villageCode: vol.villageCode, villageName: (villageByCode[vol.villageCode]||{}).name||'',
-      volunteerCode: vol.code, volunteerName: vol.name,
-      childCount: kids.length, completedAt: new Date().toISOString()
-    }), true));
-    Promise.all(writes).then(function(){
+    allRecords.forEach(function(r){ lastMapObj[r.childCode] = r; });
+    try{ localStorage.setItem('lastmap_'+vol.code, JSON.stringify(lastMapObj)); }catch(e){}
+
+    // Format records for Google Sheet
+    var sheetRows = allRecords.map(function(r){
+      return {
+        submittedAt: r.submittedAt,
+        volunteerCode: r.volunteerCode,
+        volunteerName: r.volunteerName,
+        villageCode: r.villageCode,
+        villageName: r.villageName,
+        sessionDate: r.date,
+        sessionId: r.sessionId,
+        topics: Array.isArray(r.topics) ? r.topics.join(', ') : '',
+        childCode: r.childCode,
+        childName: r.childName,
+        attendance: r.attendance, attendanceReason: r.attendanceReason,
+        health: r.health, healthReason: r.healthReason,
+        education: r.education, educationReason: r.educationReason,
+        protection: r.protection, protectionReason: r.protectionReason,
+        participation: r.participation, participationReason: r.participationReason
+      };
+    });
+
+    postToSheet({ records: sheetRows }).then(function(){
+      // clear draft from localStorage
+      try{ localStorage.removeItem('draft_'+vol.code+'_'+state.sessionId); }catch(e){}
       Object.keys(lastMapObj).forEach(function(code){ state.lastMap[code] = lastMapObj[code]; });
       state.busy = false;
       state.childStatus = {};
@@ -928,27 +947,27 @@
   }
 
   // ---------- admin / export ----------
+  // ---------- admin / export (reads from localStorage drafts + lastmaps) ----------
   var adminCache = null;
   function loadAdminData(){
-    if(!window.storage){ adminCache=[]; render(); return; }
     state.busy = true; render();
-    window.storage.list('mon_', true).then(function(r){
-      var keys = (r && r.keys) || [];
-      return Promise.all(keys.map(function(k){
-        return window.storage.get(k, true).then(function(rr){
-          try{ return JSON.parse(rr.value); }catch(e){ return []; }
-        }).catch(function(){ return []; });
-      }));
-    }).then(function(sessions){
+    try{
       var items = [];
-      sessions.forEach(function(v){
-        if(Array.isArray(v)) items = items.concat(v);
-        else if(v && v.childCode) items.push(v);
-      });
+      for(var i=0; i<localStorage.length; i++){
+        var k = localStorage.key(i);
+        if(!k) continue;
+        if(k.indexOf('lastmap_') === 0){
+          try{
+            var map = JSON.parse(localStorage.getItem(k)||'{}');
+            Object.values(map).forEach(function(r){ if(r && r.childCode) items.push(r); });
+          }catch(e){}
+        }
+      }
       adminCache = items.sort(function(a,b){ return (b.submittedAt||'').localeCompare(a.submittedAt||''); });
-      state.busy = false; render();
-    }).catch(function(){ adminCache=[]; state.busy=false; render(); });
+    }catch(e){ adminCache = []; }
+    state.busy = false; render();
   }
+
 
   function renderAdminView(){
     var html = '<div class="rc-card">';
