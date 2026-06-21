@@ -673,7 +673,21 @@
   }
 
   function postToSheet(payload){
-    return fetch(SHEET_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    // IMPORTANT: do NOT set mode:'no-cors' or a custom Content-Type header here.
+    // Apps Script web apps already return CORS-friendly responses for plain
+    // requests, but 'no-cors' makes the response opaque so we can never see
+    // whether doPost actually succeeded or threw an error. Leaving the
+    // Content-Type unset keeps this a "simple" request (no preflight), while
+    // still letting us read the real JSON response below.
+    return fetch(SHEET_URL,{method:'POST',body:JSON.stringify(payload)})
+      .then(function(r){
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        return r.json();
+      })
+      .then(function(res){
+        if(!res || res.result!=='success') throw new Error((res&&res.message)||'Unknown server error');
+        return res;
+      });
   }
 
   /* ── STATE ───────────────────────────────────────────────────────── */
@@ -744,7 +758,7 @@
       try{localStorage.removeItem('draft_'+vol.code+'_'+state.sessionId);}catch(e){}
       Object.keys(lastMapObj).forEach(function(code){state.lastMap[code]=lastMapObj[code];});
       state.busy=false;state.childStatus={};state.childSaved={};state.sessionTopics=[];state.sessionId=null;state.view='done';render();
-    }).catch(function(){state.busy=false;showToast('មានបញ្ហា សូមព្យាយាមម្តងទៀត',true);render();});
+    }).catch(function(err){state.busy=false;showToast('មានបញ្ហា៖ '+(err&&err.message?err.message:'សូមព្យាយាមម្តងទៀត'),true);render();});
   }
 
   function goVillage(){state.view='village';state.volunteerCode=null;render();}
