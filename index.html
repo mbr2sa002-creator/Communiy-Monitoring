@@ -240,6 +240,23 @@
   .rc-continue-btn:hover{transform:translateY(-1px);box-shadow:0 8px 24px rgba(42,96,73,.35);}
   .rc-continue-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none;}
 
+  .rc-link-btn{
+    width:100%;border:1.5px solid var(--forest);background:var(--ok-bg);color:var(--forest-deep);border-radius:999px;
+    padding:11px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;
+    transition:.2s;margin-top:10px;margin-bottom:4px;display:flex;align-items:center;justify-content:center;gap:8px;
+  }
+  .rc-link-btn:hover{background:var(--forest);color:#fff;}
+
+  .rc-back-row{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+  .rc-back-btn{
+    border:none;background:none;color:var(--forest-deep);font-size:13px;font-weight:700;cursor:pointer;
+    font-family:inherit;display:flex;align-items:center;gap:4px;padding:4px 0;
+  }
+  .rc-rc-search{
+    width:100%;border:1.5px solid var(--line);border-radius:999px;background:var(--paper-raised);
+    padding:9px 14px;font-size:13px;font-family:inherit;margin-bottom:12px;box-sizing:border-box;
+  }
+
   .rc-session-summary{
     display:flex;flex-wrap:wrap;gap:8px;background:var(--ok-bg);color:var(--forest-deep);
     border-radius:var(--radius-sm);padding:11px 13px;font-size:12px;margin-bottom:16px;
@@ -638,7 +655,7 @@
   var DATA_CACHE_KEY = 'rc_data_cache_v1';
   var SHEET_URL = SHEET_DATA_URL;
 
-  var villageByCode={}, communeByCode={}, volunteerByCode={}, childrenByVolunteer={}, volunteersByVillage={};
+  var villageByCode={}, communeByCode={}, volunteerByCode={}, childrenByVolunteer={}, volunteersByVillage={}, childrenByVillage={};
 
   function rebuildIndexes(){
     villageByCode={}; DB.villages.forEach(function(v){villageByCode[v.code]=v;});
@@ -648,6 +665,8 @@
     DB.children.forEach(function(c){(childrenByVolunteer[c.volunteerCode]=childrenByVolunteer[c.volunteerCode]||[]).push(c);});
     volunteersByVillage={};
     DB.volunteers.forEach(function(v){(volunteersByVillage[v.villageCode]=volunteersByVillage[v.villageCode]||[]).push(v);});
+    childrenByVillage={};
+    DB.children.forEach(function(c){(childrenByVillage[c.villageCode]=childrenByVillage[c.villageCode]||[]).push(c);});
   }
   rebuildIndexes();
 
@@ -699,6 +718,7 @@
     role:null, cvcName:null, cvcVillageName:null,
     view:'village', villageCode:null, volunteerCode:null,
     villageSearch:'', communeFilter:'all', sortMode:'issues',
+    rcSearch:'', rcDetailCode:null,
     sessionDate:todayISO(), sessionTopics:[], sessionId:null,
     childStatus:{}, childSaved:{}, lastMap:{}, modalChild:null,
     toast:null, toastError:false, busy:false, savingChild:null,
@@ -845,6 +865,8 @@
     html+=renderHeader();
     if(state.view==='admin'){html+='<div class="rc-shell">'+renderAdminView()+'</div>';}
     else if(state.view==='done'){html+='<div class="rc-shell">'+renderDoneView()+'</div>';}
+    else if(state.view==='village_rc'){html+='<div class="rc-shell">'+renderVillageRcView()+'</div>';}
+    else if(state.view==='rc_detail'){html+='<div class="rc-shell">'+renderRcDetail(state.rcDetailCode)+'</div>';}
     else{
       html+='<div class="rc-shell">';
       html+=renderTrail();
@@ -1024,11 +1046,124 @@
       html+='<div class="rc-topic-opt'+(on?' is-on':'')+'" data-topic="'+i+'"><span class="rc-topic-check">'+(on?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>':'')+'</span>'+escapeHtml(t)+'</div>';
     });
     html+='</div></div>';
+    var villKidCount=(childrenByVillage[vol.villageCode]||[]).length;
+    html+='<button type="button" class="rc-link-btn" data-act="go" data-target="village_rc">';
+    html+='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    html+='មើលកុមារទាំងអស់ក្នុងភូមិ ('+villKidCount+'នាក់)</button>';
     var canContinue=state.sessionTopics.length>0&&!!state.sessionDate;
     var kidCount=(childrenByVolunteer[vol.code]||[]).length;
     html+='<button type="button" class="rc-continue-btn" id="rc-session-continue"'+(canContinue?'':' disabled')+'>';
     html+='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
     html+='បន្តទៅកុមារ ('+kidCount+'នាក់)</button>';
+    html+='</div>';
+    return html;
+  }
+
+  /* ── VILLAGE RC VIEW (read-only: all children in the volunteer's village) ── */
+  function renderVillageRcView(){
+    var vol=volunteerByCode[state.volunteerCode];
+    var html='<div class="rc-card">';
+    if(!vol){html+='<div class="rc-empty">សូមជ្រើសរើសអ្នកស្ម័គ្រចិត្ត</div></div>';return html;}
+    html+='<div class="rc-back-row"><button type="button" class="rc-back-btn" data-act="go" data-target="session">'+
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> ត្រឡប់</button></div>';
+    var villName=villageByCode[vol.villageCode]?villageByCode[vol.villageCode].name:vol.villageName;
+    html+='<div class="rc-section-title">👶 កុមារទាំងអស់ក្នុងភូមិ '+escapeHtml(villName||'')+'</div>';
+    var kids=(childrenByVillage[vol.villageCode]||[]).slice();
+    html+='<div class="rc-section-sub">បញ្ជីនេះសម្រាប់មើលប៉ុណ្ណោះ រួមមានកុមារទាំងអស់ដែលរស់នៅក្នុងភូមិនេះ</div>';
+    html+='<input type="text" class="rc-rc-search" placeholder="ស្វែងរកតាមឈ្មោះកុមារ..." data-bind="rcSearch" value="'+escapeHtml(state.rcSearch||'')+'"/>';
+
+    var q=(state.rcSearch||'').trim().toLowerCase();
+    if(q){kids=kids.filter(function(c){return (c.name||'').toLowerCase().indexOf(q)!==-1;});}
+    kids.sort(function(a,b){return (a.name||'').localeCompare(b.name||'','km');});
+
+    if(kids.length===0){
+      html+='<div class="rc-empty">'+(q?'រកមិនឃើញកុមារដែលត្រូវនឹងការស្វែងរក':'មិនមានកុមារក្នុងភូមិនេះនៅឡើយ')+'</div>';
+    }
+    kids.forEach(function(c){
+      html+='<button type="button" class="rc-child-row" data-act="viewRc" data-c="'+escapeHtml(c.code)+'">';
+      if(c.photo){html+='<img class="rc-avatar" src="'+escapeHtml(c.photo)+'" alt="" onerror="this.style.display=\'none\'">';}
+      else{html+='<div class="rc-avatar">'+escapeHtml(initials(c.name))+'</div>';}
+      html+='<div class="rc-child-info">'+
+        '<div class="rc-child-name">'+escapeHtml(c.name)+'</div>'+
+        '<div class="rc-child-meta">'+escapeHtml(c.gender||'')+' · '+escapeHtml(c.age||'-')+'ឆ្នាំ'+
+          (c.volunteerCode&&volunteerByCode[c.volunteerCode]?' · អ្នកមើលថែ៖ '+escapeHtml(volunteerByCode[c.volunteerCode].name):'')+
+        '</div>';
+      html+='</div>';
+      html+='<span class="rc-pick-arrow2">›</span>';
+      html+='</button>';
+    });
+    html+='</div>';
+    return html;
+  }
+
+  function renderRcDetail(code){
+    var c=DB.children.filter(function(x){return x.code===code;})[0];
+    var html='<div class="rc-card">';
+    if(!c){html+='<div class="rc-empty">រកមិនឃើញកុមារនេះ</div></div>';return html;}
+    html+='<div class="rc-back-row"><button type="button" class="rc-back-btn" data-act="go" data-target="village_rc">'+
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> ត្រឡប់</button></div>';
+    html+='<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:18px;">';
+    if(c.photo){html+='<img class="rc-avatar" style="width:72px;height:72px;font-size:24px;" src="'+escapeHtml(c.photo)+'" alt="" onerror="this.style.display=\'none\'">';}
+    else{html+='<div class="rc-avatar" style="width:72px;height:72px;font-size:24px;">'+escapeHtml(initials(c.name))+'</div>';}
+    html+='<div class="rc-section-title" style="margin:0;">'+escapeHtml(c.name)+'</div>';
+    html+='</div>';
+    var villName=villageByCode[c.villageCode]?villageByCode[c.villageCode].name:'';
+    var d=c.detail||null;
+
+    function section(title,rows){
+      var out='<div class="rc-section-title" style="font-size:13px;margin:18px 0 8px;">'+escapeHtml(title)+'</div>';
+      out+='<div style="display:flex;flex-direction:column;gap:2px;">';
+      rows.forEach(function(r){
+        var val=r[1];
+        if(val===''||val==null) val='-';
+        out+='<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);">'+
+          '<span style="color:var(--ink-soft);font-size:12.5px;flex-shrink:0;">'+escapeHtml(r[0])+'</span>'+
+          '<span style="font-weight:700;font-size:13px;text-align:right;">'+escapeHtml(String(val))+'</span>'+
+        '</div>';
+      });
+      out+='</div>';
+      return out;
+    }
+
+    html+=section('ព័ត៌មានទូទៅ',[
+      ['លេខកូដកុមារ',c.code],
+      ['ភេទ',c.gender],
+      ['អាយុ',(c.age||'-')+' ឆ្នាំ'],
+      ['ភូមិ',villName],
+      ['អ្នកស្ម័គ្រចិត្តទទួលបន្ទុក',c.volunteerCode&&volunteerByCode[c.volunteerCode]?volunteerByCode[c.volunteerCode].name:'-'],
+      ['ចំនួនថ្ងៃផុតកំណត់',c.overdue!=null?c.overdue+' ថ្ងៃ':'-']
+    ]);
+
+    if(d){
+      html+=section('កំណើត និងស្ថានភាព',[
+        ['ឈ្មោះជាអក្សរឡាតាំង',d.nameEn],
+        ['ថ្ងៃខែឆ្នាំកំណើត',d.birthDate],
+        ['ស្ថានភាព RC',d.rcStatus],
+        ['វត្តមានកុមារ',d.presentStatus],
+        ['មូលហេតុចាកចេញបណ្តោះអាសន្ន',d.absentReason]
+      ]);
+      html+=section('ការសិក្សា',[
+        ['កម្រិតវប្បធម៌',d.educationLevel],
+        ['ថ្នាក់រៀន',d.gradeCourse]
+      ]);
+      html+=section('គ្រួសារ',[
+        ['ឈ្មោះម្តាយ',d.motherName||d.motherNameEn],
+        ['ឈ្មោះឪពុក',d.fatherName||d.fatherNameEn],
+        ['បងប្អូនប្រុស',d.brothers],
+        ['បងប្អូនស្រី',d.sisters]
+      ]);
+      html+=section('អ្នកឧបត្ថម្ភ (Sponsor)',[
+        ['គណនីអ្នកឧបត្ថម្ភ',d.sponsorAccount],
+        ['ឈ្មោះអ្នកឧបត្ថម្ភ',d.sponsorNameKm||d.sponsorNameEn]
+      ]);
+      html+=section('កម្មវិធី និងការតាមដាន',[
+        ['ចូលរួមសកម្មភាព SNC',d.sncActivity],
+        ['ចូលរួមសកម្មភាពកម្មវិធី',d.programActivity],
+        ['ដៃគូសម្ព័ន្ធ',d.keyPartners],
+        ['ចំនួនថ្ងៃតាមដាន',d.monitoringDays],
+        ['ស្ថានភាពការតាមដាន',d.monitoringStatus]
+      ]);
+    }
     html+='</div>';
     return html;
   }
@@ -1214,6 +1349,9 @@
     root.querySelectorAll('[data-bind="villageSearch"]').forEach(function(el){
       el.addEventListener('input',function(){state.villageSearch=el.value;render();preserveFocus('villageSearch');});
     });
+    root.querySelectorAll('[data-bind="rcSearch"]').forEach(function(el){
+      el.addEventListener('input',function(){state.rcSearch=el.value;render();preserveFocus('rcSearch');});
+    });
     root.querySelectorAll('[data-bind="sortMode"]').forEach(function(el){
       el.addEventListener('change',function(){state.sortMode=el.value;render();});
     });
@@ -1232,7 +1370,11 @@
         if(t==='village')goVillage();
         else if(t==='volunteer'){state.view='volunteer';render();}
         else if(t==='session'){state.view='session';render();}
+        else if(t==='village_rc'){state.view='village_rc';state.rcSearch='';render();}
       });
+    });
+    root.querySelectorAll('[data-act="viewRc"]').forEach(function(el){
+      el.addEventListener('click',function(){state.rcDetailCode=el.getAttribute('data-c');state.view='rc_detail';render();});
     });
     root.querySelectorAll('[data-act="admin"]').forEach(function(el){
       el.addEventListener('click',function(){
