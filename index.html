@@ -618,6 +618,7 @@
   /* ── DATA & CONFIG ───────────────────────────────────────────────── */
   var RAW = document.getElementById('rc-data').textContent;
   var DB = JSON.parse(RAW);
+  var DEFAULT_TOPICS = (DB.topics&&DB.topics.length) ? DB.topics.slice() : [];
 
   // The shared "volunteer" login is gone — each CVC now logs in with their
   // own username/password, checked against the Volunteers sheet on the
@@ -651,9 +652,10 @@
   rebuildIndexes();
 
   function applySheetData(fresh){
+    fresh=fresh||{};
     DB.communes=fresh.communes||[]; DB.villages=fresh.villages||[];
     DB.volunteers=fresh.volunteers||[]; DB.children=fresh.children||[];
-    if(fresh.topics&&fresh.topics.length) DB.topics=fresh.topics;
+    DB.topics=(fresh.topics&&fresh.topics.length)?fresh.topics:(DB.topics&&DB.topics.length?DB.topics:DEFAULT_TOPICS);
     rebuildIndexes();
   }
   function cacheData(){try{localStorage.setItem(DATA_CACHE_KEY,JSON.stringify({communes:DB.communes,villages:DB.villages,volunteers:DB.volunteers,children:DB.children,topics:DB.topics,savedAt:new Date().toISOString()}));}catch(e){}}
@@ -796,6 +798,7 @@
   }
   function finishVisit(){
     var vol=volunteerByCode[state.volunteerCode];
+    if(!vol){showToast('មិនអាចរកព័ត៌មានអ្នកស្ម័គ្រចិត្ត សូមចូលប្រើប្រាស់ម្តងទៀត',true);return;}
     var kids=childrenByVolunteer[vol.code]||[];
     for(var i=0;i<kids.length;i++){var st=state.childStatus[kids[i].code];if(!st)continue;for(var j=0;j<CRITERIA.length;j++){var f=st[CRITERIA[j].key];if(f.val==='No'&&!f.reason.trim()){state.modalChild=kids[i].code;render();showToast('សូមបំពេញមូលហេតុសម្រាប់ '+kids[i].name,true);return;}}}
     state.busy=true;render();
@@ -1016,7 +1019,7 @@
     html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>ថ្ងៃទីតាមដាន</label><input type="date" id="rc-session-date" value="'+escapeHtml(state.sessionDate)+'" max="'+todayISO()+'"/></div>';
     html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>ប្រធានបទ (អាចជ្រើសច្រើន)</label>';
     html+='<div class="rc-topic-grid">';
-    DB.topics.forEach(function(t,i){
+    (DB.topics||[]).forEach(function(t,i){
       var on=state.sessionTopics.indexOf(t)!==-1;
       html+='<div class="rc-topic-opt'+(on?' is-on':'')+'" data-topic="'+i+'"><span class="rc-topic-check">'+(on?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>':'')+'</span>'+escapeHtml(t)+'</div>';
     });
