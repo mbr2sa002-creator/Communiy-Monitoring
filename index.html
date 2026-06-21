@@ -1135,34 +1135,45 @@
     ]);
 
     if(d){
-      html+=section('កំណើត និងស្ថានភាព',[
+      html+=section('កំណើត និងអត្តសញ្ញាណ',[
         ['ឈ្មោះជាអក្សរឡាតាំង',d.nameEn],
+        ['ភេទ (English)',d.genderEn],
+        ['សំបុត្រកំណើត',d.birthCertificate],
         ['ថ្ងៃខែឆ្នាំកំណើត',d.birthDate],
+        ['ផ្ទៀងផ្ទាត់ថ្ងៃកំណើត',d.birthDateVerified],
         ['ស្ថានភាព RC',d.rcStatus],
-        ['វត្តមានកុមារ',d.presentStatus],
-        ['មូលហេតុចាកចេញបណ្តោះអាសន្ន',d.absentReason]
+        ['ឈ្មោះភូមិ (កូដកម្មវិធី)',d.villageNameEn]
+      ]);
+      html+=section('វត្តមាន និងស្ថានភាពកុមារ',[
+        ['វត្តមានកុមារ',d.presentStatusKm||d.presentStatus],
+        ['មូលហេតុចាកចេញបណ្តោះអាសន្ន',d.absentReasonKm||d.absentReason]
       ]);
       html+=section('ការសិក្សា',[
         ['កម្រិតវប្បធម៌',d.educationLevel],
         ['ថ្នាក់រៀន',d.gradeCourse]
       ]);
       html+=section('គ្រួសារ',[
-        ['ឈ្មោះម្តាយ',d.motherName||d.motherNameEn],
-        ['ឈ្មោះឪពុក',d.fatherName||d.fatherNameEn],
+        ['ឈ្មោះម្តាយ',d.motherName],
+        ['ឈ្មោះម្តាយ (English)',d.motherNameEn],
+        ['ឈ្មោះឪពុក',d.fatherName],
+        ['ឈ្មោះឪពុក (English)',d.fatherNameEn],
         ['បងប្អូនប្រុស',d.brothers],
         ['បងប្អូនស្រី',d.sisters]
       ]);
       html+=section('អ្នកឧបត្ថម្ភ (Sponsor)',[
         ['គណនីអ្នកឧបត្ថម្ភ',d.sponsorAccount],
-        ['ឈ្មោះអ្នកឧបត្ថម្ភ',d.sponsorNameKm||d.sponsorNameEn]
+        ['ឈ្មោះអ្នកឧបត្ថម្ភ (English)',d.sponsorNameEn],
+        ['ឈ្មោះអ្នកឧបត្ថម្ភ (Khmer)',d.sponsorNameKm]
       ]);
       html+=section('កម្មវិធី និងការតាមដាន',[
         ['ចូលរួមសកម្មភាព SNC',d.sncActivity],
         ['ចូលរួមសកម្មភាពកម្មវិធី',d.programActivity],
-        ['ដៃគូសម្ព័ន្ធ',d.keyPartners],
-        ['ចំនួនថ្ងៃតាមដាន',d.monitoringDays],
+        ['ឈ្មោះ CVC',d.cvcName],
+        ['លេខកូដ CVC',d.cvcId],
         ['ស្ថានភាពការតាមដាន',d.monitoringStatus]
       ]);
+    } else {
+      html+='<div class="rc-empty" style="margin-top:14px;">មិនមានទិន្នន័យលម្អិតបន្ថែមសម្រាប់កុមារនេះ</div>';
     }
     html+='</div>';
     return html;
