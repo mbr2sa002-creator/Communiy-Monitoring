@@ -1,0 +1,2907 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>RC Monitoring App</title>
+
+<!-- ══ PWA ══ -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RC Monitor">
+<meta name="theme-color" content="#1a5c2a">
+<meta name="description" content="RC Child Monitoring App — World Vision Cambodia">
+
+<link rel="manifest" id="pwa-manifest">
+<link rel="apple-touch-icon" id="pwa-icon-apple">
+<link rel="icon" type="image/png" id="pwa-icon-favicon">
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;500;600;700;800&family=Inter:wght@400;600;700&display=swap">
+
+<script>
+(function(){
+  // ── Generate app icon ──────────────────────────────────
+  var c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  var ctx = c.getContext('2d');
+  var g = ctx.createLinearGradient(0, 0, 512, 512);
+  g.addColorStop(0, '#4caf6e');
+  g.addColorStop(0.5, '#2e8b45');
+  g.addColorStop(1, '#0d3318');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.roundRect(0, 0, 512, 512, 96); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.beginPath(); ctx.arc(256, 148, 62, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(180,220); ctx.quadraticCurveTo(256,210,332,220);
+  ctx.lineTo(320,360); ctx.quadraticCurveTo(256,370,192,360);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(192,240); ctx.lineTo(130,310); ctx.lineTo(145,325); ctx.lineTo(205,258); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(320,240); ctx.lineTo(382,310); ctx.lineTo(367,325); ctx.lineTo(307,258); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(210,355); ctx.lineTo(195,440); ctx.lineTo(225,440); ctx.lineTo(240,360); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(302,355); ctx.lineTo(317,440); ctx.lineTo(287,440); ctx.lineTo(272,360); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.98)';
+  ctx.font = 'bold 80px Inter,Arial,sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('RC', 256, 490);
+  var iconUrl = c.toDataURL('image/png');
+  document.getElementById('pwa-icon-apple').href = iconUrl;
+  document.getElementById('pwa-icon-favicon').href = iconUrl;
+
+  // ── Inline manifest (no service worker — not needed for install) ──
+  var manifest = {
+    name: 'RC Child Monitoring App',
+    short_name: 'RC Monitor',
+    description: 'RC Child Monitoring — World Vision Cambodia',
+    start_url: './',
+    display: 'standalone',
+    background_color: '#e8f5ec',
+    theme_color: '#2e8b45',
+    orientation: 'portrait-primary',
+    lang: 'km',
+    icons: [
+      { src: iconUrl, sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+      { src: iconUrl, sizes: '192x192', type: 'image/png', purpose: 'any' }
+    ]
+  };
+  var blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+  document.getElementById('pwa-manifest').href = URL.createObjectURL(blob);
+})();
+</script>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script>
+/* =========================================================================
+   FIREBASE SETUP — same shared project as the MBR2 dashboard (index.html)
+   -------------------------------------------------------------------------
+   This re-implements the same window.storage get/set/delete/list interface
+   used by the dashboard, pointed at the SAME Firebase project/config, so
+   monitoring visits recorded here show up live inside the dashboard's
+   "ការត្រួតពិនិត្យវាល · Field Monitoring" tab. Keep this config identical
+   to the one in index.html — that's what makes the two apps share data.
+   ========================================================================= */
+const firebaseConfig = {
+  apiKey: "AIzaSyBtHvbtxFFkaN09MqSN2CGwiKobzuQJS_M",
+  authDomain: "mbr2-dashboard.firebaseapp.com",
+  projectId: "mbr2-dashboard",
+  storageBucket: "mbr2-dashboard.firebasestorage.app",
+  messagingSenderId: "122727869591",
+  appId: "1:122727869591:web:76a9f92a2740b40a920dd2"
+};
+/* ---- shared Firestore keys — MUST match index.html exactly so this app reads the
+   dashboard's live data instead of a separate backend ---- */
+const KEY_RC = 'sd:rc:v1';           // dashboard's RC roster — Object<ChildID, record>
+const KEY_CVCMAP = 'sd:cvcmap:v1';   // dashboard's Village → CVC name assignment — Object<villageName, cvcName>
+const KEY_RCMON_USERS = 'sd:rcmon:users:v1'; // THIS app's own login accounts (separate from the dashboard's login) — Array<{code,cvcName,username,password}>
+const SHARED = true;
+const _fbReady = firebaseConfig.apiKey !== "YOUR_API_KEY";
+let _authPromise = null;
+function _ensureAuth(){
+  if(!_fbReady) return Promise.reject(new Error('Firebase not configured'));
+  if(!_authPromise){
+    _authPromise = new Promise((resolve, reject) => {
+      firebase.auth().onAuthStateChanged(user => { if(user) resolve(user); });
+      firebase.auth().signInAnonymously().catch(reject);
+    });
+  }
+  return _authPromise;
+}
+function _sanitizeKey(key){ return String(key).replace(/\//g, '_'); }
+if(_fbReady){ firebase.initializeApp(firebaseConfig); }
+const _db = _fbReady ? firebase.firestore() : null;
+
+const _CHUNK_CHARS = 250000;
+async function _fbSetChunked(collRef, docId, value){
+  const docRef = collRef.doc(docId);
+  if(value.length <= _CHUNK_CHARS){
+    await docRef.set({ value, chunked: false, chunkCount: 0, updatedAt: Date.now() });
+    await _fbCleanupChunks(collRef, docId, 0);
+    return;
+  }
+  const chunks = [];
+  for(let i=0; i<value.length; i+=_CHUNK_CHARS) chunks.push(value.slice(i, i+_CHUNK_CHARS));
+  await Promise.all(chunks.map((c, idx) => collRef.doc(docId+'__c'+idx).set({ value: c, updatedAt: Date.now() })));
+  await docRef.set({ chunked: true, chunkCount: chunks.length, updatedAt: Date.now() });
+  await _fbCleanupChunks(collRef, docId, chunks.length);
+}
+async function _fbCleanupChunks(collRef, docId, fromIndex){
+  const dels = [];
+  for(let i=fromIndex; i<fromIndex+40; i++){
+    const snap = await collRef.doc(docId+'__c'+i).get();
+    if(!snap.exists) break;
+    dels.push(collRef.doc(docId+'__c'+i).delete());
+  }
+  if(dels.length) await Promise.all(dels);
+}
+async function _fbGetChunked(collRef, docId){
+  const snap = await collRef.doc(docId).get();
+  if(!snap.exists) return null;
+  const data = snap.data();
+  if(!data.chunked) return data.value;
+  const chunkSnaps = await Promise.all(Array.from({ length: data.chunkCount }, (_, i) => collRef.doc(docId+'__c'+i).get()));
+  return chunkSnaps.map(s => s.exists ? s.data().value : '').join('');
+}
+async function _fbDeleteChunked(collRef, docId){
+  await collRef.doc(docId).delete();
+  await _fbCleanupChunks(collRef, docId, 0);
+}
+
+window.storage = {
+  async get(key, shared){
+    if(!shared){
+      const v = localStorage.getItem('sd_personal_' + key);
+      return v !== null ? { key, value: v, shared: false } : null;
+    }
+    await _ensureAuth();
+    const value = await _fbGetChunked(_db.collection('shared'), _sanitizeKey(key));
+    return value !== null ? { key, value, shared: true } : null;
+  },
+  async set(key, value, shared){
+    if(!shared){
+      localStorage.setItem('sd_personal_' + key, value);
+      return { key, value, shared: false };
+    }
+    await _ensureAuth();
+    await _fbSetChunked(_db.collection('shared'), _sanitizeKey(key), value);
+    return { key, value, shared: true };
+  },
+  async delete(key, shared){
+    if(!shared){
+      localStorage.removeItem('sd_personal_' + key);
+      return { key, deleted: true, shared: false };
+    }
+    await _ensureAuth();
+    await _fbDeleteChunked(_db.collection('shared'), _sanitizeKey(key));
+    return { key, deleted: true, shared: true };
+  },
+  async list(prefix, shared){
+    if(!shared){
+      let keys = Object.keys(localStorage)
+        .filter(k => k.startsWith('sd_personal_'))
+        .map(k => k.slice('sd_personal_'.length));
+      if(prefix) keys = keys.filter(k => k.startsWith(prefix));
+      return { keys, prefix, shared: false };
+    }
+    await _ensureAuth();
+    const snap = await _db.collection('shared').get();
+    let keys = snap.docs.map(d => d.id);
+    if(prefix) keys = keys.filter(k => k.startsWith(prefix));
+    return { keys, prefix, shared: true };
+  }
+};
+</script>
+</head>
+<body>
+
+<!-- ══ PWA Install Banner ══ -->
+<div id="pwa-install-banner" style="display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;
+  background:linear-gradient(135deg,#0d3318,#2e8b45);color:#fff;border-radius:16px;padding:14px 20px;
+  box-shadow:0 8px 32px rgba(0,60,20,.35),0 2px 0 rgba(100,255,150,.2) inset;
+  align-items:center;gap:12px;max-width:340px;width:calc(100% - 32px);
+  font-family:'Noto Sans Khmer','Inter',sans-serif;">
+  <span style="font-size:28px;flex:none;">📲</span>
+  <div style="flex:1;min-width:0;">
+    <div style="font-size:13px;font-weight:800;margin-bottom:2px;">ដំឡើង App នៅលើទូរស័ព្ទ</div>
+    <div style="font-size:11.5px;opacity:.85;">Install RC Monitoring App</div>
+  </div>
+  <button id="pwa-install-btn" style="background:rgba(255,255,255,.95);color:#8f3d00;border:none;
+    border-radius:999px;padding:8px 16px;font-size:12px;font-weight:800;cursor:pointer;
+    font-family:inherit;flex:none;box-shadow:0 2px 6px rgba(0,0,0,.2);">ដំឡើង</button>
+  <button id="pwa-dismiss-btn" style="background:none;border:none;color:rgba(255,255,255,.7);
+    font-size:20px;cursor:pointer;padding:0 2px;flex:none;line-height:1;">×</button>
+</div>
+
+<div id="rc-app"></div>
+
+<script id="rc-data" type="application/json">{"communes": [], "villages": [], "volunteers": [], "children": [], "topics": ["3. ថ្ងៃកំណើត", "11. បណ្តុះបណ្តាលអប់រំសុខភាព", "12. បណ្តុះបណ្តាលអាន/សរសេរ", "19. បណ្តុះបណ្តាលសិទ្ធិកុមារ", "20. ក្លឹបកុមារ", "74. បណ្តុះបណ្តាលគ្រប់គ្រងហានិភ័យគ្រោះមហន្តរាយ", "80.បណ្តុះបណ្តាលអនាម័យ", "តាមដានវត្តមានកុមារប្រចាំខែ"]}</script>
+
+<style>
+  /* ═══════════════════════════════════════════════════════════
+     WORLD VISION — 3D PREMIUM THEME
+     Signature: deep-relief cards with layered orange depth,
+     glass-shimmer headers, embossed buttons with true 3D press
+  ═══════════════════════════════════════════════════════════ */
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;500;600;700;800&family=Inter:wght@400;600;700;800&display=swap');
+
+  :root{
+    /* ── World Cup Green palette ── */
+    --wv-orange:       #2e8b45;
+    --wv-orange-deep:  #1a5c2a;
+    --wv-orange-dark:  #0d3318;
+    --wv-orange-light: #4caf6e;
+    --wv-amber:        #f5c823;
+    --wv-cream:        #f0faf3;
+    --wv-cream-deep:   #d8f0de;
+    --wv-gold:         #e6b800;
+
+    /* ── Aliases kept for JS compatibility ── */
+    --forest:          var(--wv-orange);
+    --forest-deep:     var(--wv-orange-deep);
+    --forest-light:    #e8f5ec;
+    --ink:             #0d2b16;
+    --ink-soft:        #3a6b47;
+    --paper:           #f2faf4;
+    --paper-raised:    #ffffff;
+    --line:            #b8dfc4;
+    --rice:            #f5c823;
+    --rice-soft:       #fffbe0;
+    --clay:            #c05a35;
+    --clay-soft:       #fde8df;
+    --moss:            #4caf6e;
+    --sky:             #2196f3;
+    --lavender:        #7c74c0;
+    --ok-bg:           #e8f5ec;
+    --ok-fg:           #1a5c2a;
+    --warn-bg:         #fffde0;
+    --warn-fg:         #7a6000;
+    --bad-bg:          #fde2da;
+    --bad-fg:          #a83520;
+    --radius:          18px;
+    --radius-sm:       12px;
+
+    /* ── 3D depth system ── */
+    --raise-xs:  0 1px 0 rgba(255,255,255,.9) inset, 0 -1px 0 rgba(0,80,30,.15) inset, 0 2px 4px rgba(0,60,20,.12);
+    --raise-sm:  0 2px 0 rgba(255,255,255,.9) inset, 0 -2px 0 rgba(0,80,30,.2) inset, 0 4px 8px rgba(0,60,20,.14), 0 1px 3px rgba(0,60,20,.08);
+    --raise-md:  0 3px 0 rgba(255,255,255,.85) inset, 0 -3px 0 rgba(0,80,30,.25) inset, 0 8px 24px rgba(0,60,20,.16), 0 2px 6px rgba(0,60,20,.1);
+    --raise-lg:  0 4px 0 rgba(255,255,255,.8) inset, 0 -4px 0 rgba(0,60,20,.3) inset, 0 16px 40px rgba(0,60,20,.18), 0 4px 12px rgba(0,60,20,.12);
+    --press:     0 1px 0 rgba(255,255,255,.6) inset, 0 -1px 0 rgba(0,60,20,.1) inset, 0 1px 3px rgba(0,60,20,.2);
+    --glass:     0 1px 0 rgba(255,255,255,.95) inset, 0 -1px 0 rgba(0,100,40,.1) inset;
+
+    /* ── Green button depth ── */
+    --btn-raise: 0 3px 0 var(--wv-orange-dark), 0 6px 18px rgba(0,100,40,.35), 0 1px 0 rgba(100,255,150,.3) inset;
+    --btn-press: 0 1px 0 var(--wv-orange-dark), 0 2px 6px rgba(0,100,40,.25), 0 1px 0 rgba(100,255,150,.2) inset;
+
+    --shadow-card: 0 2px 0 rgba(255,255,255,.9) inset,
+                   0 -2px 0 rgba(0,80,30,.15) inset,
+                   0 8px 32px rgba(0,60,20,.10),
+                   0 2px 8px rgba(0,60,20,.07),
+                   0 0 0 1px rgba(0,120,50,.08);
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0;}
+
+  body{
+    background: #c8e6cc;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(46,139,69,.25) 0%, transparent 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(0,100,40,.06) 40px),
+      repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(0,100,40,.06) 40px);
+    min-height:100vh;
+  }
+
+  #rc-app, #rc-app *{box-sizing:border-box;}
+  #rc-app{
+    font-family:'Noto Sans Khmer','Inter',system-ui,sans-serif;
+    color:var(--ink);
+    min-height:100%;
+    width:100%;
+    padding-bottom:70px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ─── WELCOME SPLASH ─────────────────────────────────── */
+  .rc-splash{
+    position:fixed;inset:0;z-index:2000;
+    background:
+      radial-gradient(ellipse 70% 60% at 50% 30%, rgba(100,220,140,.25) 0%, transparent 70%),
+      linear-gradient(160deg,#0d3318 0%,#1a5c2a 35%,#2e8b45 65%,#4caf6e 100%);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:28px 24px;text-align:center;
+    animation:splashOut 0.5s ease 3.8s both;
+  }
+  @keyframes splashOut{to{opacity:0;pointer-events:none;visibility:hidden;}}
+
+  .rc-splash-logo{
+    width:88px;height:88px;border-radius:24px;
+    background:linear-gradient(145deg,rgba(255,255,255,.25),rgba(255,255,255,.08));
+    backdrop-filter:blur(16px);
+    border:1.5px solid rgba(255,255,255,.35);
+    box-shadow:
+      0 2px 0 rgba(255,255,255,.5) inset,
+      0 -2px 0 rgba(0,0,0,.15) inset,
+      0 16px 40px rgba(0,0,0,.3),
+      0 4px 16px rgba(255,160,60,.4);
+    display:flex;align-items:center;justify-content:center;
+    margin-bottom:22px;
+    animation:logoIn 0.6s cubic-bezier(.34,1.56,.64,1) 0.2s both;
+  }
+  @keyframes logoIn{from{transform:scale(0.5) rotate(-10deg);opacity:0}to{transform:scale(1) rotate(0);opacity:1}}
+
+  .rc-splash-children{
+    width:100%;max-width:380px;height:160px;margin:0 auto 24px;
+    filter:drop-shadow(0 8px 20px rgba(0,0,0,.25));
+    animation:childrenIn 0.7s cubic-bezier(.34,1.56,.64,1) 0.4s both;
+  }
+  @keyframes childrenIn{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
+
+  .rc-splash-welcome{
+    color:#fff;font-size:18px;font-weight:800;line-height:1.5;
+    text-shadow:0 2px 0 rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.2);
+    margin-bottom:10px;
+    animation:textIn 0.6s ease 0.8s both;
+  }
+  .rc-splash-sub{
+    color:rgba(255,255,255,.8);font-size:13px;font-weight:600;
+    text-shadow:0 1px 4px rgba(0,0,0,.2);
+    animation:textIn 0.6s ease 1.0s both;
+  }
+  @keyframes textIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+
+  .rc-splash-dots{
+    display:flex;gap:7px;margin-top:28px;
+    animation:textIn 0.5s ease 1.3s both;
+  }
+  .rc-splash-dots span{
+    width:8px;height:8px;border-radius:50%;
+    background:rgba(255,255,255,.4);
+    box-shadow:0 2px 4px rgba(0,0,0,.2);
+    animation:dotPulse 1.4s ease-in-out infinite;
+  }
+  .rc-splash-dots span:nth-child(2){animation-delay:.2s;}
+  .rc-splash-dots span:nth-child(3){animation-delay:.4s;}
+  @keyframes dotPulse{0%,100%{background:rgba(255,255,255,.3);transform:scale(1);}50%{background:rgba(255,255,255,.95);transform:scale(1.4);box-shadow:0 0 8px rgba(255,200,100,.6);}}
+
+  /* ─── SHELL ─────────────────────────────────────────── */
+  .rc-shell{max-width:720px;margin:0 auto;padding:18px 16px 0;}
+
+  /* ─── HERO ───────────────────────────────────────────── */
+  .rc-hero{
+    position:relative;border-radius:22px;overflow:hidden;margin-bottom:14px;
+    background:linear-gradient(175deg,#f0faf3 0%,#d8f0de 60%,#c8e8d0 100%);
+    box-shadow:
+      0 3px 0 rgba(255,255,255,.95) inset,
+      0 -3px 0 rgba(0,100,40,.2) inset,
+      0 12px 40px rgba(0,60,20,.14),
+      0 3px 8px rgba(0,60,20,.1),
+      0 0 0 1px rgba(0,160,60,.2);
+  }
+  .rc-hero-bg{
+    position:absolute;top:0;left:0;width:100%;height:130px;max-height:100%;
+    z-index:0;display:block;
+  }
+  .rc-hero::after{
+    content:'';position:absolute;top:0;left:0;width:100%;height:100%;z-index:1;
+    background:linear-gradient(180deg,
+      rgba(240,250,243,.05) 0%,
+      rgba(240,250,243,.72) 55%,
+      rgba(240,250,243,.96) 100%);
+  }
+  .rc-hero-content{position:relative;z-index:2;padding:6px 16px 18px;}
+  .rc-hero-tagline{
+    font-size:11.5px;line-height:1.6;color:var(--wv-orange-deep);font-weight:700;
+    margin:2px 0 14px;padding:10px 14px;
+    background:linear-gradient(135deg,rgba(255,255,255,.9),rgba(255,245,230,.8));
+    border-radius:12px;
+    border:1px solid rgba(232,119,34,.2);
+    box-shadow:
+      0 2px 0 rgba(255,255,255,.95) inset,
+      0 -1px 0 rgba(200,100,0,.1) inset,
+      0 4px 12px rgba(200,100,0,.08);
+    letter-spacing:.1px;
+  }
+
+  /* ─── HEADER ─────────────────────────────────────────── */
+  .rc-header{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:6px 2px 22px;
+  }
+  .rc-brand{display:flex;align-items:center;gap:14px;}
+  .rc-mark{
+    width:50px;height:50px;border-radius:15px;flex:none;
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:
+      0 3px 0 rgba(255,200,100,.5) inset,
+      0 -3px 0 rgba(80,30,0,.35) inset,
+      0 8px 24px rgba(200,90,0,.4),
+      0 2px 6px rgba(200,90,0,.25),
+      0 0 0 1.5px rgba(255,160,60,.3);
+    transition:.2s;
+  }
+  .rc-mark:hover{transform:translateY(-1px);box-shadow:0 3px 0 rgba(255,200,100,.5) inset,0 -3px 0 rgba(80,30,0,.35) inset,0 12px 30px rgba(200,90,0,.45),0 4px 10px rgba(200,90,0,.3);}
+  .rc-title{font-size:16px;font-weight:800;line-height:1.3;letter-spacing:.1px;color:var(--wv-orange-deep);text-shadow:0 1px 0 rgba(255,255,255,.8);}
+  .rc-subtitle{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+  .rc-header-actions{display:flex;align-items:center;gap:8px;flex:none;}
+
+  .rc-admin-btn{
+    flex:none;
+    border:1.5px solid rgba(232,119,34,.3);
+    background:linear-gradient(145deg,#d4ecdb,#bcdfc8);
+    color:var(--ink-soft);font-size:12px;padding:8px 16px;border-radius:999px;
+    cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit;
+    font-weight:700;white-space:nowrap;
+    box-shadow:var(--raise-sm);
+    transition:.15s;
+  }
+  .rc-admin-btn:hover{
+    border-color:var(--wv-orange);color:var(--wv-orange-deep);
+    background:linear-gradient(145deg,#fff8f0,#ffe8cc);
+    box-shadow:var(--raise-md);transform:translateY(-1px);
+  }
+  .rc-admin-btn:active{box-shadow:var(--press);transform:translateY(1px);}
+
+  .rc-logout-btn{
+    border:1.5px solid rgba(200,90,0,.2);
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    color:var(--ink-soft);font-size:11.5px;padding:7px 13px;border-radius:999px;
+    cursor:pointer;font-family:inherit;font-weight:700;
+    box-shadow:var(--raise-xs);transition:.15s;
+  }
+  .rc-logout-btn:hover{border-color:var(--clay);color:var(--clay);transform:translateY(-1px);box-shadow:var(--raise-sm);}
+  .rc-logout-btn:active{box-shadow:var(--press);transform:translateY(1px);}
+
+  /* ─── TRAIL ──────────────────────────────────────────── */
+  .rc-trail{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:0;}
+  .rc-trail-pill{
+    display:flex;align-items:center;gap:6px;font-size:12px;
+    background:linear-gradient(145deg,#d0ebda,#b8d9c4);
+    border:1.5px solid rgba(46,139,69,.3);
+    padding:7px 14px 7px 8px;border-radius:999px;color:var(--ink);
+    cursor:pointer;font-family:inherit;font-weight:700;max-width:200px;
+    box-shadow:var(--raise-xs);transition:.15s;
+  }
+  .rc-trail-pill:hover{transform:translateY(-1px);box-shadow:var(--raise-sm);}
+  .rc-trail-pill:active{transform:translateY(0);box-shadow:var(--press);}
+  .rc-trail-pill.is-active{
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    border-color:var(--wv-orange-dark);color:#fff;
+    box-shadow:0 3px 0 var(--wv-orange-dark),0 6px 18px rgba(0,100,40,.35),0 1px 0 rgba(100,255,150,.3) inset;
+  }
+  .rc-trail-pill.is-done{
+    color:#0d3318;font-weight:800;
+    border-color:rgba(46,139,69,.4);
+    background:linear-gradient(145deg,#2e8b45,#1a5c2a);
+    color:#fff;
+  }
+  .rc-trail-pill.is-done:hover{background:linear-gradient(145deg,#3da85e,#2e8b45);color:#fff;}
+  .rc-trail-pill .rc-trail-num{
+    width:18px;height:18px;border-radius:50%;
+    background:rgba(0,80,30,.2);color:var(--ink);
+    font-size:10px;display:flex;align-items:center;justify-content:center;flex:none;font-weight:800;
+  }
+  .rc-trail-pill.is-active .rc-trail-num{background:rgba(255,255,255,.25);color:#fff;}
+  .rc-trail-pill.is-done .rc-trail-num{background:rgba(255,255,255,.25);color:#fff;}
+  .rc-trail-pill span.lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .rc-trail-arrow{color:rgba(46,139,69,.5);font-size:12px;font-weight:700;}
+
+  /* ─── CARDS ──────────────────────────────────────────── */
+  .rc-card{
+    background:linear-gradient(175deg,#eaf6ee 0%,#d4eddb 100%);
+    border:1px solid rgba(46,139,69,.25);
+    border-radius:20px;
+    box-shadow:var(--shadow-card);
+    padding:22px;margin-bottom:16px;
+    position:relative;overflow:hidden;
+  }
+  .rc-card::before{
+    content:'';position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(76,175,110,.8),transparent);
+    border-radius:20px 20px 0 0;
+  }
+  .rc-section-title{
+    font-size:15px;font-weight:800;margin-bottom:4px;
+    color:#0d3318;
+    text-shadow:0 1px 0 rgba(255,255,255,.4);
+  }
+  .rc-section-sub{font-size:12.5px;color:var(--ink-soft);margin-bottom:18px;line-height:1.55;}
+
+  /* ─── SEARCH & CHIPS ─────────────────────────────────── */
+  .rc-search{
+    width:100%;
+    border:1.5px solid rgba(46,139,69,.25);
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    border-radius:var(--radius-sm);padding:12px 14px 12px 42px;font-size:14px;
+    font-family:inherit;color:var(--ink);margin-bottom:13px;
+    transition:.2s;
+    box-shadow:
+      0 2px 0 rgba(255,255,255,.9) inset,
+      0 -1px 0 rgba(0,100,40,.1) inset,
+      0 2px 8px rgba(0,60,20,.06);
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' viewBox='0 0 24 24'%3E%3Ccircle cx='11' cy='11' r='7' stroke='%232e8b45' stroke-width='2'/%3E%3Cpath d='m16 16 4 4' stroke='%232e8b45' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:13px center;
+  }
+  .rc-search:focus{
+    outline:none;border-color:var(--wv-orange);background:#fff;
+    box-shadow:0 0 0 3px rgba(46,139,69,.18),0 2px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.1) inset;
+  }
+
+  .rc-commune-tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:13px;}
+  .rc-chip{
+    border:1.5px solid rgba(46,139,69,.22);
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    color:var(--ink-soft);font-size:12px;padding:7px 14px;border-radius:999px;
+    cursor:pointer;font-family:inherit;font-weight:700;
+    box-shadow:var(--raise-xs);transition:.15s;
+  }
+  .rc-chip:hover:not(.is-on){border-color:var(--wv-orange);color:var(--wv-orange-deep);transform:translateY(-1px);box-shadow:var(--raise-sm);}
+  .rc-chip:active{transform:translateY(1px);box-shadow:var(--press);}
+  .rc-chip.is-on{
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    border-color:var(--wv-orange-dark);color:#fff;
+    box-shadow:0 3px 0 var(--wv-orange-dark),0 5px 14px rgba(200,90,0,.3),0 1px 0 rgba(255,200,80,.4) inset;
+  }
+
+  /* ─── LISTS ──────────────────────────────────────────── */
+  .rc-list{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow-y:auto;padding-right:2px;}
+  .rc-pick-row{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    border:1.5px solid rgba(46,139,69,.18);
+    border-radius:var(--radius-sm);
+    padding:15px 16px;cursor:pointer;
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    transition:.15s;text-align:left;font-family:inherit;width:100%;
+    box-shadow:var(--raise-sm);
+  }
+  .rc-pick-row:hover{
+    border-color:var(--wv-orange);background:linear-gradient(145deg,#d4ecdb,#bcdfc8);
+    box-shadow:0 3px 0 rgba(255,255,255,.85) inset,0 -3px 0 rgba(0,100,40,.15) inset,0 8px 24px rgba(0,80,30,.12),0 2px 6px rgba(0,80,30,.08);
+    transform:translateY(-2px);
+  }
+  .rc-pick-row:active{transform:translateY(0);box-shadow:var(--press);}
+  .rc-pick-main{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .rc-pick-name{font-size:14px;font-weight:700;color:var(--ink);}
+  .rc-pick-meta{font-size:11.5px;color:var(--ink-soft);}
+  .rc-pick-arrow{
+    width:30px;height:30px;border-radius:50%;
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    color:var(--wv-orange);display:flex;align-items:center;justify-content:center;flex:none;
+    font-size:14px;font-weight:700;transition:.15s;
+    box-shadow:0 2px 0 rgba(255,255,255,.9) inset,0 -2px 0 rgba(0,100,40,.15) inset,0 3px 8px rgba(0,80,30,.12);
+  }
+  .rc-pick-row:hover .rc-pick-arrow{
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    color:#fff;
+    box-shadow:0 2px 0 rgba(100,255,150,.4) inset,0 -2px 0 rgba(0,60,20,.3) inset,0 4px 10px rgba(0,100,40,.3);
+  }
+  .rc-count-badge{
+    flex:none;font-size:11px;font-weight:800;color:var(--wv-orange-deep);
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    border-radius:999px;padding:3px 11px;
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.15) inset,0 2px 6px rgba(0,80,30,.1);
+    border:1px solid rgba(46,139,69,.2);
+  }
+  .rc-empty{padding:36px 10px;text-align:center;color:var(--ink-soft);font-size:13px;}
+
+  /* ─── SESSION ────────────────────────────────────────── */
+  .rc-field{margin-bottom:18px;}
+  .rc-field label{display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:800;color:var(--wv-orange-deep);margin-bottom:8px;text-transform:uppercase;letter-spacing:.7px;text-shadow:0 1px 0 rgba(255,255,255,.9);}
+  .rc-field label svg{opacity:.7;}
+  .rc-field input[type=date], .rc-field select, .rc-field textarea, .rc-field input[type=text], .rc-field input[type=password]{
+    width:100%;border:1.5px solid rgba(46,139,69,.22);border-radius:var(--radius-sm);
+    padding:12px 14px;font-size:14px;font-family:inherit;color:var(--ink);
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    transition:.2s;
+    box-shadow:0 2px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.1) inset,0 2px 8px rgba(0,60,20,.06);
+  }
+  .rc-field textarea{resize:vertical;min-height:68px;}
+  .rc-field input:focus, .rc-field select:focus, .rc-field textarea:focus{
+    outline:none;border-color:var(--wv-orange);background:#fff;
+    box-shadow:0 0 0 3px rgba(46,139,69,.18),0 2px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.1) inset;
+  }
+
+  .rc-topic-grid{display:flex;flex-direction:column;gap:8px;}
+  .rc-topic-opt{
+    border:1.5px solid rgba(46,139,69,.18);border-radius:var(--radius-sm);padding:12px 14px;
+    font-size:13px;cursor:pointer;
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    transition:.15s;display:flex;align-items:center;gap:10px;
+    box-shadow:var(--raise-xs);
+  }
+  .rc-topic-opt:hover{border-color:var(--wv-orange);background:linear-gradient(145deg,#d4ecdb,#bcdfc8);transform:translateY(-1px);box-shadow:var(--raise-sm);}
+  .rc-topic-opt:active{transform:translateY(0);box-shadow:var(--press);}
+  .rc-topic-opt.is-on{
+    border-color:var(--wv-orange);
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    font-weight:700;color:var(--wv-orange-deep);
+    box-shadow:0 2px 0 rgba(255,255,255,.85) inset,0 -2px 0 rgba(0,100,40,.18) inset,0 4px 12px rgba(0,80,30,.1);
+  }
+  .rc-topic-check{
+    width:22px;height:22px;border-radius:7px;border:2px solid rgba(46,139,69,.25);flex:none;
+    display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(145deg,#d4ecdb,#bcdfc8);transition:.15s;
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.1) inset,0 2px 4px rgba(0,60,20,.08);
+  }
+  .rc-topic-opt.is-on .rc-topic-check{
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    border-color:var(--wv-orange-dark);color:#fff;
+    box-shadow:0 2px 0 rgba(255,200,80,.4) inset,0 -2px 0 rgba(80,30,0,.3) inset,0 3px 8px rgba(200,90,0,.3);
+  }
+
+  /* ─── PRIMARY BUTTON (3D press effect) ─────────────────── */
+  .rc-continue-btn, .rc-login-btn, .rc-submit-btn, .rc-btn-primary, .rc-export-btn{
+    border:none;
+    background:linear-gradient(170deg,var(--wv-orange-light) 0%,var(--wv-orange) 40%,var(--wv-orange-deep) 100%);
+    color:#fff;border-radius:999px;
+    font-size:14px;font-weight:800;cursor:pointer;font-family:inherit;
+    transition:.12s;display:flex;align-items:center;justify-content:center;gap:8px;
+    box-shadow:var(--btn-raise);
+    text-shadow:0 1px 2px rgba(0,0,0,.25);
+    letter-spacing:.2px;
+    position:relative;overflow:hidden;
+  }
+  .rc-continue-btn::before, .rc-login-btn::before, .rc-submit-btn::before, .rc-btn-primary::before, .rc-export-btn::before{
+    content:'';position:absolute;top:0;left:0;right:0;height:50%;
+    background:linear-gradient(180deg,rgba(255,255,255,.22),transparent);
+    border-radius:999px 999px 0 0;pointer-events:none;
+  }
+  .rc-continue-btn{width:100%;padding:15px;margin-top:4px;}
+  .rc-login-btn{width:100%;padding:15px;margin-top:4px;}
+  .rc-submit-btn{padding:12px 26px;font-size:13px;white-space:nowrap;}
+  .rc-btn-primary{flex:1.6;padding:14px;font-size:13.5px;}
+  .rc-export-btn{padding:9px 18px;font-size:12.5px;}
+
+  .rc-continue-btn:hover, .rc-login-btn:hover, .rc-submit-btn:hover, .rc-btn-primary:hover, .rc-export-btn:hover{
+    transform:translateY(-2px);
+    box-shadow:0 5px 0 var(--wv-orange-dark),0 10px 28px rgba(200,90,0,.45),0 1px 0 rgba(255,200,80,.5) inset;
+  }
+  .rc-continue-btn:active, .rc-login-btn:active, .rc-submit-btn:active, .rc-btn-primary:active, .rc-export-btn:active{
+    transform:translateY(2px);box-shadow:var(--btn-press);
+  }
+  .rc-continue-btn:disabled, .rc-login-btn:disabled, .rc-submit-btn:disabled, .rc-btn-primary:disabled, .rc-export-btn:disabled{
+    opacity:.5;cursor:not-allowed;transform:none;box-shadow:0 1px 0 var(--wv-orange-dark),0 2px 6px rgba(200,90,0,.2);
+  }
+
+  .rc-link-btn{
+    width:100%;
+    border:2px solid var(--wv-orange);
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    color:var(--wv-orange-deep);border-radius:999px;
+    padding:12px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;
+    transition:.15s;margin-top:10px;margin-bottom:4px;display:flex;align-items:center;justify-content:center;gap:8px;
+    box-shadow:var(--raise-sm);
+  }
+  .rc-link-btn:hover{background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange));color:#fff;border-color:var(--wv-orange-dark);transform:translateY(-1px);box-shadow:var(--btn-raise);}
+  .rc-link-btn:active{transform:translateY(1px);box-shadow:var(--press);}
+
+  .rc-back-row{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+  .rc-back-btn{
+    border:none;background:none;color:var(--wv-orange-deep);font-size:13px;font-weight:800;cursor:pointer;
+    font-family:inherit;display:flex;align-items:center;gap:4px;padding:4px 0;
+    text-shadow:0 1px 0 rgba(255,255,255,.8);
+  }
+  .rc-rc-search{
+    width:100%;border:1.5px solid rgba(200,120,0,.22);border-radius:999px;
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    padding:10px 16px;font-size:13px;font-family:inherit;margin-bottom:13px;box-sizing:border-box;
+    box-shadow:var(--raise-xs);
+  }
+
+  .rc-session-summary{
+    display:flex;flex-wrap:wrap;gap:8px;
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    color:var(--wv-orange-deep);
+    border-radius:var(--radius-sm);padding:12px 14px;font-size:12px;font-weight:600;margin-bottom:18px;
+    border:1.5px solid rgba(46,139,69,.25);
+    box-shadow:0 2px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.12) inset,0 4px 12px rgba(0,80,30,.08);
+  }
+
+  /* ─── CHILDREN ───────────────────────────────────────── */
+  .rc-sort-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;gap:8px;}
+  .rc-sort-row select{
+    border:1.5px solid rgba(46,139,69,.3);border-radius:999px;
+    background:linear-gradient(145deg,#2e8b45,#1a5c2a);
+    padding:8px 14px;font-size:12px;font-family:inherit;color:#fff;font-weight:700;
+    box-shadow:var(--raise-xs);
+  }
+  .rc-child-row{
+    display:flex;align-items:center;gap:13px;
+    border:1.5px solid rgba(46,139,69,.18);
+    border-radius:var(--radius-sm);padding:13px 15px;
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    margin-bottom:9px;cursor:pointer;
+    transition:.15s;text-align:left;width:100%;font-family:inherit;
+    box-shadow:var(--raise-sm);
+  }
+  .rc-child-row:hover{
+    border-color:var(--wv-orange);
+    background:linear-gradient(145deg,#d4ecdb,#bcdfc8);
+    box-shadow:0 3px 0 rgba(255,255,255,.85) inset,0 -3px 0 rgba(0,100,40,.2) inset,0 8px 24px rgba(0,80,30,.12),0 2px 6px rgba(0,80,30,.08);
+    transform:translateY(-2px);
+  }
+  .rc-child-row:active{transform:translateY(0);box-shadow:var(--press);}
+  .rc-child-row.has-issue{border-color:var(--clay);background:linear-gradient(145deg,#fff5f5,var(--clay-soft));}
+  .rc-avatar{
+    width:50px;height:50px;border-radius:14px;flex:none;object-fit:cover;
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:17px;
+    box-shadow:0 3px 0 rgba(255,200,80,.4) inset,0 -3px 0 rgba(80,30,0,.3) inset,0 6px 16px rgba(200,90,0,.3);
+    text-shadow:0 1px 3px rgba(0,0,0,.3);
+  }
+  .rc-child-info{flex:1;min-width:0;}
+  .rc-child-name{font-size:14px;font-weight:700;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .rc-child-meta{font-size:11.5px;color:var(--ink-soft);margin-top:2px;}
+  .rc-tag{font-size:10px;font-weight:800;padding:3px 9px;border-radius:999px;letter-spacing:.2px;white-space:nowrap;box-shadow:var(--raise-xs);}
+  .rc-tag.ok{background:linear-gradient(145deg,#2e8b45,#1a5c2a);color:#ffffff;border:1px solid rgba(0,80,30,.3);text-shadow:0 1px 2px rgba(0,0,0,.25);}
+  .rc-tag.warn{background:linear-gradient(145deg,#f5a623,#d4870a);color:#ffffff;border:1px solid rgba(180,100,0,.3);text-shadow:0 1px 2px rgba(0,0,0,.2);}
+  .rc-tag.bad{background:linear-gradient(145deg,#e05340,#b02a1a);color:#ffffff;border:1px solid rgba(150,30,20,.3);text-shadow:0 1px 2px rgba(0,0,0,.25);}
+  .rc-last{font-size:11px;color:var(--ink-soft);margin-top:3px;}
+  .rc-pick-arrow2{
+    width:30px;height:30px;border-radius:50%;
+    background:linear-gradient(145deg,#e8f5ec,#c8ecd4);
+    color:var(--wv-orange);display:flex;align-items:center;justify-content:center;flex:none;
+    font-size:12px;transition:.15s;
+    box-shadow:0 2px 0 rgba(255,255,255,.9) inset,0 -2px 0 rgba(0,100,40,.15) inset,0 3px 8px rgba(0,80,30,.12);
+  }
+  .rc-child-row:hover .rc-pick-arrow2{
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));color:#fff;
+    box-shadow:0 2px 0 rgba(100,255,150,.4) inset,0 -2px 0 rgba(0,60,20,.3) inset,0 4px 10px rgba(0,100,40,.3);
+  }
+
+  .rc-sticky-submit{
+    position:sticky;bottom:10px;margin-top:18px;
+    background:linear-gradient(145deg,#d4ecdb,#bcdfc8);
+    border:1.5px solid rgba(46,139,69,.2);
+    border-radius:20px;
+    box-shadow:0 3px 0 rgba(255,255,255,.9) inset,0 -3px 0 rgba(0,100,40,.15) inset,0 12px 36px rgba(0,60,20,.16),0 3px 8px rgba(0,60,20,.1);
+    padding:15px 18px;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+  .rc-sticky-text{font-size:12px;color:var(--ink-soft);}
+  .rc-sticky-text b{color:var(--ink);}
+
+  /* ─── SECONDARY BUTTON ───────────────────────────────── */
+  .rc-btn-secondary{
+    flex:1;
+    border:1.5px solid rgba(46,139,69,.22);
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);
+    color:var(--ink-soft);padding:13px;border-radius:999px;font-size:13.5px;font-weight:700;
+    cursor:pointer;font-family:inherit;transition:.15s;
+    box-shadow:var(--raise-sm);
+  }
+  .rc-btn-secondary:hover{border-color:var(--ink-soft);transform:translateY(-1px);box-shadow:var(--raise-md);}
+  .rc-btn-secondary:active{transform:translateY(1px);box-shadow:var(--press);}
+
+  /* ─── MODAL ──────────────────────────────────────────── */
+  .rc-overlay{
+    position:fixed;inset:0;
+    background:rgba(80,30,0,.45);backdrop-filter:blur(4px);
+    display:flex;align-items:flex-end;justify-content:center;z-index:1000;
+    animation:rcFade .15s ease;
+  }
+  @keyframes rcFade{from{opacity:0}to{opacity:1}}
+  @media(min-width:640px){.rc-overlay{align-items:center;}}
+  .rc-modal{
+    background:linear-gradient(175deg,#d0ebda 0%,#b8d9c4 100%);
+    width:100%;max-width:480px;max-height:92vh;overflow-y:auto;
+    border-radius:24px 24px 0 0;padding:26px 22px 28px;
+    box-shadow:0 3px 0 rgba(255,255,255,.9) inset,0 -3px 0 rgba(0,100,40,.15) inset,0 -20px 60px rgba(0,60,20,.2),0 0 0 1px rgba(46,139,69,.15);
+    animation:rcUp .22s ease;
+    position:relative;overflow:hidden;
+  }
+  .rc-modal::before{
+    content:'';position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(76,175,110,.8),transparent);
+    border-radius:24px 24px 0 0;
+  }
+  @media(min-width:640px){.rc-modal{border-radius:24px;}.rc-modal::before{border-radius:24px 24px 0 0;}}
+  @keyframes rcUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+  .rc-modal-head{display:flex;align-items:center;gap:13px;margin-bottom:18px;padding-bottom:16px;border-bottom:1.5px solid rgba(46,139,69,.25);}
+  .rc-modal-avatar{width:54px;height:54px;border-radius:14px;object-fit:cover;}
+  .rc-modal-h{font-size:16px;font-weight:800;color:var(--wv-orange-deep);text-shadow:0 1px 0 rgba(255,255,255,.6);}
+  .rc-modal-sub{font-size:12px;color:var(--ink-soft);margin-top:2px;}
+
+  .rc-criterion{
+    border:1.5px solid rgba(46,139,69,.18);border-radius:var(--radius-sm);padding:14px;margin-bottom:10px;
+    background:linear-gradient(145deg,#e2f2e8,#cde8d6);transition:.15s;
+    box-shadow:var(--raise-sm);
+  }
+  .rc-criterion.is-no{border-color:var(--clay);background:linear-gradient(145deg,#fff8f8,var(--clay-soft));box-shadow:0 2px 0 rgba(255,255,255,.85) inset,0 -2px 0 rgba(150,50,30,.2) inset,0 4px 12px rgba(150,50,30,.1);}
+  .rc-criterion-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .rc-criterion-label{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px;}
+  /* Per-criterion icon color chips */
+  .rc-criterion[data-key="attendance"] .crit-chip{ background:#1565c0; }
+  .rc-criterion[data-key="health"]      .crit-chip{ background:#1a7a38; }
+  .rc-criterion[data-key="education"]   .crit-chip{ background:#6a3eb8; }
+  .rc-criterion[data-key="protection"]  .crit-chip{ background:#c17d0a; }
+  .rc-criterion[data-key="participation"].crit-chip{ background:#c0392b; }
+  .crit-chip{
+    width:28px;height:28px;border-radius:8px;
+    display:flex;align-items:center;justify-content:center;font-size:16px;flex:none;
+    box-shadow:0 2px 6px rgba(0,0,0,.18),0 1px 0 rgba(255,255,255,.3) inset;
+  }
+  .rc-toggle-pair{
+    display:flex;border:1.5px solid rgba(46,139,69,.22);border-radius:999px;overflow:hidden;flex:none;
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(0,100,40,.12) inset,0 2px 6px rgba(0,60,20,.08);
+  }
+  .rc-toggle-btn{
+    border:none;background:linear-gradient(145deg,#e2f2e8,#cde8d6);color:var(--ink-soft);font-size:12px;font-weight:700;
+    padding:8px 16px;cursor:pointer;font-family:inherit;transition:.12s;
+  }
+  .rc-toggle-btn.yes.is-on{background:linear-gradient(145deg,#60d080,#2a8040);color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.3) inset,0 -1px 0 rgba(0,60,20,.3) inset;}
+  .rc-toggle-btn.no.is-on{background:linear-gradient(145deg,#e07060,var(--clay));color:#fff;box-shadow:0 1px 0 rgba(255,255,255,.3) inset,0 -1px 0 rgba(100,20,0,.3) inset;}
+  .rc-criterion-reason{margin-top:10px;}
+  .rc-criterion-reason textarea{
+    width:100%;border:1.5px solid var(--clay);border-radius:9px;padding:10px 12px;font-size:13px;
+    font-family:inherit;background:#fff;resize:vertical;min-height:52px;
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 -1px 0 rgba(150,50,30,.1) inset;
+  }
+  .rc-criterion-reason textarea:focus{outline:none;box-shadow:0 0 0 3px rgba(192,90,53,.15),0 1px 0 rgba(255,255,255,.9) inset;}
+  .rc-criterion-reason label{font-size:11px;color:var(--clay);font-weight:700;display:block;margin-bottom:4px;}
+
+  .rc-modal-actions{display:flex;gap:10px;margin-top:18px;}
+
+  /* ─── TOAST ──────────────────────────────────────────── */
+  .rc-toast{
+    position:fixed;left:50%;bottom:24px;transform:translateX(-50%);
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    color:#fff;padding:13px 24px;border-radius:999px;
+    font-size:13px;font-weight:800;
+    box-shadow:0 3px 0 var(--wv-orange-dark),0 8px 30px rgba(200,90,0,.4),0 1px 0 rgba(255,200,80,.4) inset;
+    z-index:1200;text-align:center;
+    animation:rcToast .25s ease;max-width:88vw;
+    text-shadow:0 1px 2px rgba(0,0,0,.25);
+  }
+  .rc-toast.is-error{background:linear-gradient(145deg,#e07060,var(--bad-fg));box-shadow:0 3px 0 #7a1a10,0 8px 30px rgba(150,30,20,.4);}
+  @keyframes rcToast{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+
+  .rc-loading{display:flex;align-items:center;gap:9px;color:var(--ink-soft);font-size:12.5px;padding:8px 2px 16px;}
+  .rc-spin{width:15px;height:15px;border-radius:50%;border:2.5px solid rgba(200,120,0,.2);border-top-color:var(--wv-orange);animation:rcSpin .7s linear infinite;box-shadow:0 0 8px rgba(232,119,34,.2);}
+  @keyframes rcSpin{to{transform:rotate(360deg)}}
+
+  .rc-footer-note{text-align:center;font-size:11px;color:var(--ink-soft);opacity:.6;padding:22px 10px 0;}
+
+  /* ─── ADMIN ──────────────────────────────────────────── */
+  .rc-admin-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:10px;flex-wrap:wrap;}
+  .rc-cvc-row{border:1px solid rgba(0,0,0,.08);border-radius:12px;padding:12px 14px;margin-bottom:10px;display:flex;flex-direction:column;gap:8px;}
+  .rc-cvc-row > div:first-child{display:flex;flex-direction:column;gap:2px;}
+  .rc-cvc-sub{font-size:11.5px;opacity:.65;font-weight:500;}
+  .rc-cvc-form{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
+  .rc-cvc-form select, .rc-cvc-form input{width:100%;padding:9px 10px;border-radius:8px;border:1px solid rgba(0,0,0,.15);font-family:inherit;font-size:13px;box-sizing:border-box;}
+  .rc-table-wrap{overflow-x:auto;border:1.5px solid rgba(46,139,69,.25);border-radius:var(--radius-sm);box-shadow:var(--raise-sm);}
+  table.rc-table{width:100%;border-collapse:collapse;font-size:12px;background:var(--paper-raised);}
+  table.rc-table th{
+    text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;
+    color:#ffffff;
+    background:linear-gradient(145deg,#2e8b45,#1a5c2a);
+    padding:11px 12px;border-bottom:2px solid rgba(0,80,30,.3);white-space:nowrap;font-weight:800;
+    text-shadow:0 1px 2px rgba(0,0,0,.3);
+  }
+  table.rc-table td{padding:11px 12px;border-bottom:1px solid rgba(46,139,69,.12);white-space:nowrap;}
+  table.rc-table tr:last-child td{border-bottom:none;}
+  table.rc-table tr:hover td{background:linear-gradient(145deg,#d4ecdb,#c0e0c8);}
+
+  .rc-stat-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;}
+  .rc-stat{
+    background:linear-gradient(175deg,#2e8b45 0%,#1a5c2a 100%);
+    border:1.5px solid rgba(0,80,30,.35);
+    border-radius:var(--radius-sm);
+    padding:16px 20px;flex:1;min-width:110px;transition:.15s;
+    box-shadow:var(--raise-md);
+    position:relative;overflow:hidden;
+  }
+  .rc-stat::before{
+    content:'';position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(150,255,180,.7),transparent);
+  }
+  .rc-stat:hover{
+    border-color:#4caf6e;transform:translateY(-3px);
+    box-shadow:0 4px 0 rgba(150,255,180,.2) inset,0 -4px 0 rgba(0,40,15,.4) inset,0 12px 30px rgba(0,60,20,.3),0 4px 10px rgba(0,60,20,.2);
+  }
+  .rc-stat:active{transform:translateY(0);box-shadow:var(--raise-sm);}
+  .rc-stat b{display:block;font-size:26px;color:#f5c823;font-weight:800;margin-bottom:3px;text-shadow:0 1px 0 rgba(0,0,0,.3),0 2px 8px rgba(0,0,0,.2);}
+  .rc-stat span{font-size:11px;color:rgba(200,255,220,.9);font-weight:600;}
+
+  /* ─── LOGIN ──────────────────────────────────────────── */
+  .rc-login-wrap{min-height:88vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;}
+  .rc-login-card{
+    width:100%;max-width:390px;
+    background:linear-gradient(175deg,#d0ebda 0%,#b8d9c4 100%);
+    border:1px solid rgba(46,139,69,.2);
+    border-radius:24px;
+    box-shadow:
+      0 4px 0 rgba(255,255,255,.9) inset,
+      0 -4px 0 rgba(0,100,40,.18) inset,
+      0 24px 60px rgba(0,60,20,.18),
+      0 6px 18px rgba(0,60,20,.1),
+      0 0 0 1px rgba(46,139,69,.12);
+    padding:34px 30px 30px;text-align:center;
+    position:relative;overflow:hidden;
+  }
+  .rc-login-card::before{
+    content:'';position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,rgba(76,175,110,.9),transparent);
+  }
+  .rc-login-mark{
+    width:64px;height:64px;border-radius:18px;margin:0 auto 18px;
+    background:linear-gradient(145deg,var(--wv-orange-light),var(--wv-orange-deep));
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:
+      0 3px 0 rgba(255,200,80,.5) inset,
+      0 -3px 0 rgba(80,30,0,.35) inset,
+      0 10px 28px rgba(200,90,0,.45),
+      0 3px 8px rgba(200,90,0,.25);
+  }
+  .rc-login-title{font-size:18px;font-weight:800;margin-bottom:5px;color:var(--wv-orange-deep);text-shadow:0 1px 0 rgba(255,255,255,.9);}
+  .rc-login-sub{font-size:12.5px;color:var(--ink-soft);margin-bottom:24px;line-height:1.5;}
+  .rc-login-card .rc-field{text-align:left;}
+  .rc-login-error{
+    background:var(--bad-bg);color:var(--bad-fg);font-size:12px;border-radius:10px;
+    padding:10px 13px;margin-bottom:14px;text-align:left;font-weight:700;
+    border:1px solid rgba(200,60,40,.2);
+  }
+  .rc-login-note{font-size:10.5px;color:var(--ink-soft);opacity:.7;margin-top:18px;line-height:1.5;}
+
+  /* ─── DONE VIEW ──────────────────────────────────────── */
+  .rc-done-emoji{font-size:56px;margin-bottom:14px;animation:bounce 0.6s cubic-bezier(.34,1.56,.64,1) 0.1s both;filter:drop-shadow(0 4px 12px rgba(200,90,0,.3));}
+  @keyframes bounce{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
+
+  /* ─── FOOTBALL CHILDREN ANIMATIONS ───────────────────────── */
+  @keyframes footballKick1{
+    0%,100%{transform:translate(68px,104px) scale(0.62) rotate(0deg);}
+    30%{transform:translate(68px,100px) scale(0.62) rotate(-8deg);}
+    60%{transform:translate(68px,106px) scale(0.62) rotate(4deg);}
+  }
+  @keyframes footballJump2{
+    0%,100%{transform:translate(175px,92px) scale(0.65);}
+    40%{transform:translate(175px,78px) scale(0.65);}
+    70%{transform:translate(175px,94px) scale(0.65);}
+  }
+  @keyframes footballRun3{
+    0%,100%{transform:translate(270px,100px) scale(0.62);}
+    25%{transform:translate(272px,97px) scale(0.62) rotate(2deg);}
+    75%{transform:translate(268px,102px) scale(0.62) rotate(-2deg);}
+  }
+  @keyframes ballRoll{
+    0%,100%{transform:translate(95px,87px) rotate(0deg);}
+    50%{transform:translate(98px,85px) rotate(180deg);}
+  }
+  @keyframes ballBounce{
+    0%,100%{transform:translate(290px,108px);}
+    50%{transform:translate(290px,104px);}
+  }
+
+  /* ─── CRITERION ICONS ────────────────────────────────── */
+  .crit-icon{
+    width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex:none;
+    box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 -1px 0 rgba(0,0,0,.1) inset,0 2px 4px rgba(0,0,0,.1);
+  }
+
+  /* ─── SCROLLBAR ──────────────────────────────────────── */
+  .rc-list::-webkit-scrollbar{width:5px;}
+  .rc-list::-webkit-scrollbar-track{background:transparent;}
+  .rc-list::-webkit-scrollbar-thumb{background:rgba(46,139,69,.4);border-radius:99px;}
+  .rc-list::-webkit-scrollbar-thumb:hover{background:rgba(46,139,69,.65);}
+
+  /* ─── DASHBOARD V2 ENHANCEMENTS ─────────────────────── */
+  .rc-hero-v2{
+    background:linear-gradient(160deg,#0d3318 0%,#1a5c2a 35%,#2e8b45 65%,#3da85e 85%,#f5c823 100%) !important;
+    box-shadow:
+      0 3px 0 rgba(100,255,150,.2) inset,
+      0 -3px 0 rgba(0,40,15,.5) inset,
+      0 16px 48px rgba(0,50,20,.35),
+      0 4px 12px rgba(0,50,20,.2),
+      0 0 0 1px rgba(0,180,80,.2);
+  }
+  .rc-hero-v2-glow{
+    position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;
+    background:radial-gradient(ellipse 70% 55% at 50% 0%,rgba(100,255,150,.15) 0%,rgba(245,200,0,.08) 70%,transparent 100%);
+  }
+  .rc-hero-v2 .rc-hero::after{
+    background:linear-gradient(180deg,rgba(120,50,0,.08) 0%,rgba(80,30,0,.18) 100%) !important;
+  }
+  .rc-hero-v2 .rc-title{color:#fff !important;text-shadow:0 1px 0 rgba(0,0,0,.3),0 2px 8px rgba(0,0,0,.2);}
+  .rc-hero-v2 .rc-subtitle{color:rgba(200,255,220,.9) !important;}
+  .rc-hero-v2 .rc-logout-btn{
+    background:rgba(255,255,255,.15) !important;
+    border-color:rgba(255,255,255,.3) !important;
+    color:rgba(255,255,255,.9) !important;
+    backdrop-filter:blur(8px);
+  }
+  .rc-hero-v2 .rc-logout-btn:hover{background:rgba(255,255,255,.25) !important;color:#fff !important;}
+  .rc-hero-v2 .rc-admin-btn{
+    background:rgba(255,255,255,.18) !important;
+    border-color:rgba(255,255,255,.35) !important;
+    color:#fff !important;
+    backdrop-filter:blur(8px);
+  }
+  .rc-hero-v2 .rc-admin-btn:hover{background:rgba(255,255,255,.28) !important;}
+
+  .rc-mark-v2{
+    background:rgba(255,255,255,.2) !important;
+    border:1.5px solid rgba(255,255,255,.4) !important;
+    backdrop-filter:blur(12px);
+    box-shadow:
+      0 2px 0 rgba(255,255,255,.4) inset,
+      0 -2px 0 rgba(0,0,0,.2) inset,
+      0 8px 24px rgba(0,0,0,.2),
+      0 2px 8px rgba(255,160,40,.3) !important;
+  }
+
+  .rc-hero-greeting{
+    font-size:13.5px;font-weight:700;
+    color:rgba(255,240,210,.95);
+    margin:0 0 10px;
+    text-shadow:0 1px 4px rgba(0,0,0,.3);
+    display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+  }
+  .rc-greeting-name{
+    color:#f5c823;font-weight:800;font-size:14px;
+    background:rgba(255,255,255,.15);
+    border-radius:999px;padding:2px 10px;
+    border:1px solid rgba(255,200,0,.3);
+    backdrop-filter:blur(4px);
+  }
+
+  /* Stats strip */
+  .rc-dash-stats{
+    display:flex;align-items:center;justify-content:center;
+    gap:0;margin:0 0 14px;
+    background:rgba(255,255,255,.12);
+    backdrop-filter:blur(12px);
+    border:1px solid rgba(255,255,255,.2);
+    border-radius:16px;
+    padding:10px 4px;
+    box-shadow:0 2px 0 rgba(255,255,255,.15) inset,0 -2px 0 rgba(0,0,0,.1) inset,0 4px 16px rgba(0,0,0,.12);
+  }
+  .rc-dash-stat{
+    flex:1;display:flex;align-items:center;justify-content:center;gap:8px;
+    padding:2px 8px;
+  }
+  .rc-dash-stat-icon{font-size:20px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.2));}
+  .rc-dash-stat div{display:flex;flex-direction:column;align-items:flex-start;}
+  .rc-dash-stat b{
+    font-size:20px;font-weight:800;color:#f5c823;line-height:1.1;
+    text-shadow:0 1px 0 rgba(0,0,0,.35),0 2px 8px rgba(0,0,0,.2);
+  }
+  .rc-dash-stat span{font-size:10px;color:rgba(255,235,200,.8);font-weight:600;white-space:nowrap;}
+  .rc-dash-stat-divider{width:1px;height:36px;background:rgba(255,255,255,.2);flex:none;}
+
+  /* Trail override for dark hero */
+  .rc-hero-v2 .rc-trail-pill{
+    background:rgba(255,255,255,.15) !important;
+    border-color:rgba(255,255,255,.25) !important;
+    color:rgba(255,235,200,.9) !important;
+    backdrop-filter:blur(8px);
+    box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 -1px 0 rgba(0,0,0,.15) inset,0 2px 6px rgba(0,0,0,.1) !important;
+  }
+  .rc-hero-v2 .rc-trail-pill.is-done{
+    background:rgba(255,255,255,.22) !important;
+    color:#fff !important;
+    border-color:rgba(255,255,255,.35) !important;
+  }
+  .rc-hero-v2 .rc-trail-pill.is-active{
+    background:rgba(255,255,255,.92) !important;
+    color:var(--wv-orange-deep) !important;
+    border-color:rgba(255,255,255,.9) !important;
+    box-shadow:0 3px 0 rgba(0,0,0,.15),0 6px 18px rgba(0,0,0,.2),0 1px 0 rgba(255,255,255,.9) inset !important;
+  }
+  .rc-hero-v2 .rc-trail-pill.is-active .rc-trail-num{background:#2e8b45 !important;color:#fff !important;}
+  .rc-hero-v2 .rc-trail-pill .rc-trail-num{background:rgba(255,255,255,.2) !important;color:rgba(255,240,210,.9) !important;}
+  .rc-hero-v2 .rc-trail-arrow{color:rgba(255,255,255,.4) !important;}
+
+  /* ─── FLYING STARS CANVAS ───────────────────────────── */
+  #rc-star-canvas{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    z-index:1;pointer-events:none;border-radius:22px;overflow:hidden;
+  }
+  .rc-hero{ overflow:hidden; }
+  .rc-hero-bg{ z-index:0 !important; }
+  .rc-hero::after{ z-index:2 !important; }
+  .rc-hero-content{ z-index:3 !important; position:relative; }
+</style>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<script>
+(function(){
+  "use strict";
+
+  /* ── SPLASH ─────────────────────────────────────────────────────── */
+  function injectSplash(){
+    var el = document.createElement('div');
+    el.className = 'rc-splash';
+    el.innerHTML = `
+      <div class="rc-splash-logo">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+          <path d="M20 35s-11-7.5-15-14.8C3 14 6 9 11 9c3 0 5.5 1.8 7 3.8C19.5 10.8 22 9 25 9c5 0 8 4 6 11.2C27 31.5 20 35 20 35z" stroke="white" stroke-width="2" stroke-linejoin="round" fill="rgba(255,255,255,0.15)"/>
+          <circle cx="28" cy="14" r="5" fill="rgba(232,162,58,0.8)"/>
+        </svg>
+      </div>
+      <svg class="rc-splash-children" viewBox="0 0 380 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Ground -->
+        <ellipse cx="190" cy="148" rx="175" ry="10" fill="rgba(255,255,255,0.08)"/>
+        <!-- Flowers -->
+        <circle cx="35" cy="140" r="5" fill="#e8a23a" opacity=".7"/>
+        <circle cx="30" cy="134" r="3.5" fill="#e8a23a" opacity=".5"/>
+        <circle cx="40" cy="133" r="3" fill="#e8a23a" opacity=".5"/>
+        <line x1="35" y1="145" x2="35" y2="138" stroke="#7aad88" stroke-width="1.5"/>
+        <circle cx="345" cy="140" r="5" fill="#e8a23a" opacity=".7"/>
+        <circle cx="340" cy="134" r="3.5" fill="#e8a23a" opacity=".5"/>
+        <circle cx="350" cy="133" r="3" fill="#e8a23a" opacity=".5"/>
+        <line x1="345" y1="145" x2="345" y2="138" stroke="#7aad88" stroke-width="1.5"/>
+        <!-- Tree left -->
+        <rect x="55" y="90" width="7" height="50" rx="3" fill="#7aad88" opacity=".6"/>
+        <circle cx="58.5" cy="82" r="18" fill="#e87722" opacity=".7"/>
+        <circle cx="50" cy="90" r="13" fill="#e87722" opacity=".5"/>
+        <circle cx="68" cy="88" r="13" fill="#e87722" opacity=".5"/>
+        <!-- Tree right -->
+        <rect x="317" y="90" width="7" height="50" rx="3" fill="#7aad88" opacity=".6"/>
+        <circle cx="320.5" cy="82" r="18" fill="#e87722" opacity=".7"/>
+        <circle cx="312" cy="90" r="13" fill="#e87722" opacity=".5"/>
+        <circle cx="330" cy="88" r="13" fill="#e87722" opacity=".5"/>
+
+        <!-- CHILD 1 — girl jumping (left) -->
+        <g style="animation:childBounce1 1.8s ease-in-out infinite">
+          <!-- body -->
+          <ellipse cx="108" cy="125" rx="13" ry="18" fill="#4a9dbf"/>
+          <!-- skirt -->
+          <path d="M95 127 Q108 145 121 127" fill="#c05a35" opacity=".9"/>
+          <!-- head -->
+          <circle cx="108" cy="100" r="14" fill="#f5c8a0"/>
+          <!-- hair -->
+          <path d="M94 98 Q108 84 122 98 Q118 90 108 88 Q98 90 94 98Z" fill="#3d2b1a"/>
+          <ellipse cx="95" cy="100" rx="4" ry="6" fill="#3d2b1a"/>
+          <ellipse cx="121" cy="100" rx="4" ry="6" fill="#3d2b1a"/>
+          <!-- eyes -->
+          <ellipse cx="103" cy="99" rx="2.5" ry="3" fill="#3d2b1a"/>
+          <ellipse cx="113" cy="99" rx="2.5" ry="3" fill="#3d2b1a"/>
+          <circle cx="104" cy="98" r="1" fill="#fff"/>
+          <circle cx="114" cy="98" r="1" fill="#fff"/>
+          <!-- smile -->
+          <path d="M103 106 Q108 111 113 106" stroke="#c05a35" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+          <!-- cheeks -->
+          <circle cx="101" cy="105" r="3" fill="#f5a0a0" opacity=".5"/>
+          <circle cx="115" cy="105" r="3" fill="#f5a0a0" opacity=".5"/>
+          <!-- arms raised -->
+          <line x1="95" y1="118" x2="83" y2="105" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <line x1="121" y1="118" x2="133" y2="105" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <!-- legs -->
+          <line x1="102" y1="142" x2="96" y2="148" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <line x1="114" y1="142" x2="120" y2="148" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <!-- shoes -->
+          <ellipse cx="95" cy="149" rx="6" ry="3" fill="#3d2b1a"/>
+          <ellipse cx="121" cy="149" rx="6" ry="3" fill="#3d2b1a"/>
+          <!-- hair ribbons -->
+          <circle cx="95" cy="96" r="4" fill="#e8a23a" opacity=".9"/>
+          <circle cx="121" cy="96" r="4" fill="#e8a23a" opacity=".9"/>
+        </g>
+
+        <!-- CHILD 2 — boy with ball (center) -->
+        <g style="animation:childBounce2 2.2s ease-in-out infinite">
+          <!-- body -->
+          <rect x="176" y="113" width="26" height="30" rx="10" fill="#7c74c0"/>
+          <!-- shorts -->
+          <rect x="176" y="131" width="26" height="12" rx="5" fill="#4a3a8a"/>
+          <!-- head -->
+          <circle cx="189" cy="97" r="15" fill="#c68642"/>
+          <!-- hair -->
+          <path d="M174 95 Q189 80 204 95 Q200 87 189 85 Q178 87 174 95Z" fill="#1a0a00"/>
+          <!-- eyes -->
+          <ellipse cx="184" cy="96" rx="2.5" ry="3" fill="#1a0a00"/>
+          <ellipse cx="194" cy="96" rx="2.5" ry="3" fill="#1a0a00"/>
+          <circle cx="185" cy="95" r="1" fill="#fff"/>
+          <circle cx="195" cy="95" r="1" fill="#fff"/>
+          <!-- big smile -->
+          <path d="M183 103 Q189 109 195 103" stroke="#7a3a10" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+          <path d="M183 103 Q189 110 195 103" fill="#fff" opacity=".6"/>
+          <!-- cheeks -->
+          <circle cx="181" cy="102" r="3.5" fill="#f5a0a0" opacity=".5"/>
+          <circle cx="197" cy="102" r="3.5" fill="#f5a0a0" opacity=".5"/>
+          <!-- arms -->
+          <line x1="176" y1="120" x2="161" y2="130" stroke="#c68642" stroke-width="5.5" stroke-linecap="round"/>
+          <line x1="202" y1="120" x2="217" y2="115" stroke="#c68642" stroke-width="5.5" stroke-linecap="round"/>
+          <!-- ball in hand -->
+          <circle cx="218" cy="110" r="11" fill="#e8a23a"/>
+          <path d="M210 106 Q218 100 226 106" stroke="rgba(0,0,0,.2)" stroke-width="1.2" fill="none"/>
+          <path d="M209 114 Q218 120 227 114" stroke="rgba(0,0,0,.2)" stroke-width="1.2" fill="none"/>
+          <path d="M218 99 Q218 119" stroke="rgba(0,0,0,.2)" stroke-width="1.2"/>
+          <!-- legs -->
+          <line x1="182" y1="143" x2="178" y2="150" stroke="#c68642" stroke-width="5.5" stroke-linecap="round"/>
+          <line x1="196" y1="143" x2="200" y2="150" stroke="#c68642" stroke-width="5.5" stroke-linecap="round"/>
+          <ellipse cx="177" cy="151" rx="7" ry="3.5" fill="#1a0a00"/>
+          <ellipse cx="201" cy="151" rx="7" ry="3.5" fill="#1a0a00"/>
+        </g>
+
+        <!-- CHILD 3 — girl reading book (right) -->
+        <g style="animation:childBounce3 2.0s ease-in-out infinite">
+          <!-- body -->
+          <ellipse cx="275" cy="125" rx="13" ry="18" fill="#c05a35" opacity=".9"/>
+          <!-- head -->
+          <circle cx="275" cy="100" r="14" fill="#f5c8a0"/>
+          <!-- hair long -->
+          <path d="M261 98 Q275 82 289 98 Q285 88 275 86 Q265 88 261 98Z" fill="#2d1a0a"/>
+          <rect x="260" y="98" width="6" height="28" rx="3" fill="#2d1a0a"/>
+          <rect x="289" y="98" width="6" height="28" rx="3" fill="#2d1a0a"/>
+          <!-- eyes - looking down at book -->
+          <ellipse cx="270" cy="101" rx="2" ry="1.5" fill="#2d1a0a"/>
+          <ellipse cx="280" cy="101" rx="2" ry="1.5" fill="#2d1a0a"/>
+          <!-- smile -->
+          <path d="M269 107 Q275 112 281 107" stroke="#c05a35" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+          <!-- cheeks -->
+          <circle cx="268" cy="106" r="3" fill="#f5a0a0" opacity=".5"/>
+          <circle cx="282" cy="106" r="3" fill="#f5a0a0" opacity=".5"/>
+          <!-- arms holding book -->
+          <line x1="262" y1="119" x2="251" y2="128" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <line x1="288" y1="119" x2="299" y2="128" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <!-- book -->
+          <rect x="249" y="126" width="52" height="34" rx="5" fill="#e87722"/>
+          <rect x="249" y="126" width="26" height="34" rx="5 0 0 5" fill="#e4f2eb"/>
+          <line x1="275" y1="126" x2="275" y2="160" stroke="#e87722" stroke-width="2"/>
+          <line x1="255" y1="135" x2="270" y2="135" stroke="#e87722" stroke-width="1.5" opacity=".5"/>
+          <line x1="255" y1="140" x2="270" y2="140" stroke="#e87722" stroke-width="1.5" opacity=".5"/>
+          <line x1="255" y1="145" x2="268" y2="145" stroke="#e87722" stroke-width="1.5" opacity=".5"/>
+          <line x1="279" y1="135" x2="295" y2="135" stroke="#fff" stroke-width="1.5" opacity=".4"/>
+          <line x1="279" y1="140" x2="295" y2="140" stroke="#fff" stroke-width="1.5" opacity=".4"/>
+          <!-- legs -->
+          <line x1="269" y1="142" x2="263" y2="150" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <line x1="281" y1="142" x2="287" y2="150" stroke="#f5c8a0" stroke-width="5" stroke-linecap="round"/>
+          <ellipse cx="262" cy="151" rx="6" ry="3" fill="#2d1a0a"/>
+          <ellipse cx="288" cy="151" rx="6" ry="3" fill="#2d1a0a"/>
+          <!-- bow -->
+          <path d="M268 88 Q275 84 282 88 Q275 92 268 88Z" fill="#e8a23a"/>
+        </g>
+
+        <!-- Stars / sparkles -->
+        <g opacity=".8" style="animation:twinkle 2s ease-in-out infinite">
+          <path d="M155 70 L157 75 L162 77 L157 79 L155 84 L153 79 L148 77 L153 75Z" fill="#e8a23a"/>
+        </g>
+        <g opacity=".6" style="animation:twinkle 2.5s ease-in-out 0.5s infinite">
+          <path d="M232 65 L233.5 69 L237.5 70.5 L233.5 72 L232 76 L230.5 72 L226.5 70.5 L230.5 69Z" fill="#fff"/>
+        </g>
+        <g opacity=".5" style="animation:twinkle 1.8s ease-in-out 1s infinite">
+          <path d="M78 75 L79 78 L82 79 L79 80 L78 83 L77 80 L74 79 L77 78Z" fill="#e8a23a"/>
+        </g>
+        <g opacity=".5" style="animation:twinkle 2.2s ease-in-out 0.3s infinite">
+          <path d="M308 72 L309 75 L312 76 L309 77 L308 80 L307 77 L304 76 L307 75Z" fill="#fff"/>
+        </g>
+      </svg>
+      <div class="rc-splash-welcome">សូមស្វាគមន៍មកកាន់កម្មវិធីតាមដានកុមារ RC ក្នុងសហគមន៍</div>
+      <div class="rc-splash-sub">សហគមន៍ស្រុកមង្គលបុរី ២ · បន្ទាយមានជ័យ</div>
+      <div class="rc-splash-dots"><span></span><span></span><span></span></div>
+    `;
+    document.body.insertBefore(el, document.getElementById('rc-app'));
+
+    // inject animation styles
+    var style = document.createElement('style');
+    style.textContent = `
+      @keyframes childBounce1{0%,100%{transform:translateY(0);}50%{transform:translateY(-8px) rotate(-2deg);}}
+      @keyframes childBounce2{0%,100%{transform:translateY(0);}50%{transform:translateY(-10px);}  }
+      @keyframes childBounce3{0%,100%{transform:translateY(0);}50%{transform:translateY(-6px) rotate(1deg);}}
+      @keyframes twinkle{0%,100%{opacity:.3;transform:scale(0.8);}50%{opacity:1;transform:scale(1.2);}}
+    `;
+    document.head.appendChild(style);
+
+    // remove after animation
+    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 4500);
+  }
+  injectSplash();
+
+  /* ── DATA & CONFIG ───────────────────────────────────────────────── */
+  var RAW = document.getElementById('rc-data').textContent;
+  var DB = JSON.parse(RAW);
+  var DEFAULT_TOPICS = (DB.topics&&DB.topics.length) ? DB.topics.slice() : [];
+
+  // Admin stays a single shared account (this app's own, separate from the
+  // dashboard's login) since it's just for viewing aggregate data and
+  // managing CVCs. Each CVC logs in with a username/password stored in
+  // KEY_RCMON_USERS — a login system that belongs only to this app and is
+  // never shared with the dashboard's own login (KEY_USERS in index.html).
+  var ADMIN_ACCOUNT = { user: 'admin', pass: 'admin2026' };
+
+  var CRITERIA = [
+    { key:'attendance',    label:'វត្តមាន',      icon:'📅', color:'#4a9dbf' },
+    { key:'health',        label:'សុខភាព',       icon:'🌿', color:'#e87722' },
+    { key:'education',     label:'ការសិក្សា',    icon:'📖', color:'#7c74c0' },
+    { key:'protection',    label:'ការការពារ',    icon:'🛡️', color:'#e8a23a' },
+    { key:'participation', label:'ការចូលរួម',   icon:'🤝', color:'#c05a35' }
+  ];
+
+  var DATA_CACHE_KEY = 'rc_data_cache_v1';
+
+  var villageByCode={}, communeByCode={}, volunteerByCode={}, childrenByVolunteer={}, volunteersByVillage={}, childrenByVillage={};
+  var CVC_USERS = []; // this app's own login accounts, live from KEY_RCMON_USERS — [{code,cvcName,username,password}]
+
+  function rebuildIndexes(){
+    villageByCode={}; DB.villages.forEach(function(v){villageByCode[v.code]=v;});
+    communeByCode={}; DB.communes.forEach(function(c){communeByCode[c.code]=c;});
+    volunteerByCode={}; DB.volunteers.forEach(function(v){volunteerByCode[v.code]=v;});
+    childrenByVolunteer={};
+    DB.children.forEach(function(c){(childrenByVolunteer[c.volunteerCode]=childrenByVolunteer[c.volunteerCode]||[]).push(c);});
+    volunteersByVillage={};
+    DB.volunteers.forEach(function(v){(volunteersByVillage[v.villageCode]=volunteersByVillage[v.villageCode]||[]).push(v);});
+    childrenByVillage={};
+    DB.children.forEach(function(c){(childrenByVillage[c.villageCode]=childrenByVillage[c.villageCode]||[]).push(c);});
+  }
+  rebuildIndexes();
+
+  // Turns a village/CVC name into a short stable code (a-z0-9 slug) so the
+  // rest of this app (which indexes everything by "code") keeps working the
+  // same way it always did — just fed from live data instead of a sheet.
+  function slugCode(name){
+    var s=String(name||'').trim();
+    if(!s) return 'unknown';
+    var out=''; for(var i=0;i<s.length;i++){var ch=s.charCodeAt(i); out+=(ch<128?s[i]:ch.toString(36));}
+    out=out.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+    return out||('v'+Math.abs(hashStr(s)));
+  }
+  function hashStr(s){var h=0;for(var i=0;i<s.length;i++){h=((h<<5)-h+s.charCodeAt(i))|0;}return h;}
+
+  // Builds this app's whole village/CVC/children model straight from the two
+  // documents the dashboard itself reads and writes (KEY_RC, KEY_CVCMAP), so
+  // both apps are always looking at the exact same live data. There is no
+  // "commune" concept in the dashboard's RC data, so that tier is dropped —
+  // villages are the top-level grouping here.
+  function buildDbFromDashboard(rcMap, cvcMap){
+    rcMap = rcMap || {}; cvcMap = cvcMap || {};
+    var villages = {}, volunteers = {}, children = [];
+    // seed villages/volunteers from the CVC assignment table first, so a
+    // village with an assigned CVC but (temporarily) zero children still shows up
+    Object.keys(cvcMap).forEach(function(villageName){
+      var cvcName = cvcMap[villageName];
+      var vCode = slugCode(villageName);
+      villages[vCode] = { code: vCode, name: villageName };
+      if(cvcName){
+        var cCode = slugCode(cvcName);
+        if(!volunteers[cCode]) volunteers[cCode] = { code: cCode, name: cvcName, villageCode: vCode, villageName: villageName };
+      }
+    });
+    Object.keys(rcMap).forEach(function(id){
+      var r = rcMap[id]; if(!r || !r.ChildID) return;
+      var villageName = (r.VillageKh && r.VillageKh.trim()) || r.CommunityName || 'មិនស្គាល់ភូមិ · Unknown village';
+      var vCode = slugCode(villageName);
+      if(!villages[vCode]) villages[vCode] = { code: vCode, name: villageName };
+      var cvcName = cvcMap[villageName] || '';
+      var cCode = cvcName ? slugCode(cvcName) : '';
+      if(cvcName && !volunteers[cCode]) volunteers[cCode] = { code: cCode, name: cvcName, villageCode: vCode, villageName: villageName };
+      children.push({
+        code: String(r.ChildID),
+        name: (r.ChildNameKh || r.ChildNameEn || r.ChildID),
+        villageCode: vCode,
+        volunteerCode: cCode || ('__unassigned__' + vCode), // groups RCs with no CVC under a per-village placeholder rather than losing them
+        rcStatus: r.RCStatus || ''
+      });
+    });
+    // make sure every village that ended up with unassigned children has a
+    // visible placeholder "volunteer" entry, so admins can see & fix it
+    Object.keys(villages).forEach(function(vCode){
+      var placeholderCode = '__unassigned__' + vCode;
+      var hasUnassigned = children.some(function(c){return c.volunteerCode===placeholderCode;});
+      if(hasUnassigned && !volunteers[placeholderCode]){
+        volunteers[placeholderCode] = { code: placeholderCode, name: 'មិនទាន់មាន CVC · No CVC assigned', villageCode: vCode, villageName: villages[vCode].name, unassigned: true };
+      }
+    });
+    return {
+      communes: [],
+      villages: Object.values(villages).sort(function(a,b){return a.name.localeCompare(b.name);}),
+      volunteers: Object.values(volunteers).sort(function(a,b){return a.name.localeCompare(b.name);}),
+      children: children
+    };
+  }
+
+  function cacheData(){try{localStorage.setItem(DATA_CACHE_KEY,JSON.stringify({communes:DB.communes,villages:DB.villages,volunteers:DB.volunteers,children:DB.children,topics:DB.topics,savedAt:new Date().toISOString()}));}catch(e){}}
+  function loadCachedData(){try{var v=localStorage.getItem(DATA_CACHE_KEY);if(v)return JSON.parse(v);}catch(e){}return null;}
+
+  function applyDashboardData(fresh){
+    fresh=fresh||{};
+    DB.communes=fresh.communes||[]; DB.villages=fresh.villages||[];
+    DB.volunteers=fresh.volunteers||[]; DB.children=fresh.children||[];
+    DB.topics=(DB.topics&&DB.topics.length)?DB.topics:DEFAULT_TOPICS;
+    rebuildIndexes();
+  }
+
+  // Replaces the old loadDataFromSheet(): reads the dashboard's live RC roster
+  // + CVC assignment straight from Firestore (same project/collection index.html
+  // uses), so any change made in the dashboard (or by this app's own CVC
+  // management tools below) shows up here without any separate sync step.
+  function loadDataFromSheet(opts){
+    opts=opts||{}; state.dataLoading=true; state.dataError=false;
+    if(state.authChecked) render();
+    return Promise.all([
+      window.storage.get(KEY_RC, SHARED).catch(function(){return null;}),
+      window.storage.get(KEY_CVCMAP, SHARED).catch(function(){return null;}),
+      loadCvcUsers()
+    ]).then(function(res){
+      var rcMap = res[0] && res[0].value ? JSON.parse(res[0].value) : {};
+      var cvcMap = res[1] && res[1].value ? JSON.parse(res[1].value) : {};
+      DB_CVC_MAP_CACHE = cvcMap;
+      var fresh = buildDbFromDashboard(rcMap, cvcMap);
+      applyDashboardData(fresh); cacheData(); state.dataLoading=false; state.dataError=false;
+      loadPref(); if(opts.silent!==true) showToast('ទាញយកទិន្នន័យជោគជ័យ ✓'); render();
+    }).catch(function(){
+      state.dataLoading=false; state.dataError=true;
+      if(!DB.children.length){var cached=loadCachedData();if(cached){applyDashboardData(cached);loadPref();}}
+      showToast('មិនអាចទាញយកទិន្នន័យ សូមពិនិត្យអ៊ីនធឺណិត',true); render();
+    });
+  }
+
+  /* ── THIS APP'S OWN LOGIN ACCOUNTS (KEY_RCMON_USERS) ───────────────
+     Separate from the dashboard's shared login — kept just for this app,
+     as CVC accounts (username/password) tied to the live CVC name pulled
+     from KEY_CVCMAP above. */
+  function loadCvcUsers(){
+    return window.storage.get(KEY_RCMON_USERS, SHARED).then(function(res){
+      CVC_USERS = (res && res.value) ? JSON.parse(res.value) : [];
+    }).catch(function(){ CVC_USERS = []; });
+  }
+  function saveCvcUsers(){
+    return window.storage.set(KEY_RCMON_USERS, JSON.stringify(CVC_USERS), SHARED);
+  }
+  function saveCvcMap(map){
+    DB_CVC_MAP_CACHE = map;
+    return window.storage.set(KEY_CVCMAP, JSON.stringify(map), SHARED);
+  }
+  var DB_CVC_MAP_CACHE = {}; // last-known raw village->CVC map, kept in sync by CVC management actions below
+
+  /* ── SHARED DASHBOARD STORAGE (month → village → CVC) ──────────────
+     Mirrors every finished visit into window.storage (same Firestore
+     project as the MBR2 dashboard) so admin/team-leader can browse it
+     from the dashboard's "Field Monitoring" tab, organized as:
+       sd:fieldmon:v1:{YYYY-MM}:{villageCode}:{volunteerCode}  → JSON array of records
+       sd:fieldmon:idx:v1                                       → browse index (counts/names)
+     This is purely additive — it never replaces the existing Google
+     Sheet sync, and any failure here is swallowed so it can never block
+     or break a CVC's ability to submit a visit. */
+  function fmMonthKey(dateStr){
+    var d = dateStr ? new Date(dateStr) : new Date();
+    if(isNaN(d.getTime())) d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+  }
+  function fmRecordKey(month, villageCode, volunteerCode){
+    return 'sd:fieldmon:v1:' + month + ':' + (villageCode||'unknown') + ':' + (volunteerCode||'unknown');
+  }
+  async function fmSaveVisit(vol, village, records){
+    if(!records || !records.length) return;
+    if(!window.storage) throw new Error('រក្សាទុកមិនបានទេ សូមពិនិត្យអ៊ីនធឺណិត');
+    var month = fmMonthKey(records[0].date);
+    var key = fmRecordKey(month, vol.villageCode, vol.code);
+    var existingRes = await window.storage.get(key, true);
+    var existing = [];
+    if(existingRes && existingRes.value){ try{ existing = JSON.parse(existingRes.value) || []; }catch(e){ existing = []; } }
+    records.forEach(function(r){
+      var idx = existing.findIndex(function(e){ return e.sessionId===r.sessionId && e.childCode===r.childCode; });
+      if(idx>=0) existing[idx]=r; else existing.push(r);
+    });
+    await window.storage.set(key, JSON.stringify(existing), true);
+    await fmUpdateIndex(month, vol, village, existing.length);
+  }
+  async function fmUpdateIndex(month, vol, village, count){
+    var idxKey = 'sd:fieldmon:idx:v1';
+    try{
+      var res = await window.storage.get(idxKey, true);
+      var idx = {};
+      if(res && res.value){ try{ idx = JSON.parse(res.value) || {}; }catch(e){ idx = {}; } }
+      idx[month] = idx[month] || {};
+      idx[month][vol.villageCode] = idx[month][vol.villageCode] || { villageName: (village&&village.name)||vol.villageName||'', cvcs: {} };
+      idx[month][vol.villageCode].villageName = (village&&village.name)||vol.villageName||idx[month][vol.villageCode].villageName||'';
+      idx[month][vol.villageCode].cvcs[vol.code] = { cvcName: vol.name, count: count, lastSubmittedAt: new Date().toISOString() };
+      await window.storage.set(idxKey, JSON.stringify(idx), true);
+    }catch(e){ /* non-fatal */ }
+  }
+
+  /* ── STATE ───────────────────────────────────────────────────────── */
+  var state={
+    authed:false, authChecked:false, loginError:'', loginBusy:false,
+    role:null, cvcName:null, cvcVillageName:null,
+    view:'village', villageCode:null, volunteerCode:null,
+    villageSearch:'', communeFilter:'all', sortMode:'issues',
+    rcSearch:'', rcDetailCode:null,
+    sessionDate:todayISO(), sessionTopics:[], sessionId:null,
+    childStatus:{}, childSaved:{}, lastMap:{}, modalChild:null,
+    toast:null, toastError:false, busy:false, savingChild:null,
+    dataLoading:true, dataError:false,
+    cvcManageOpen:{type:null,key:null}
+  };
+
+  function defaultStatus(){var s={};CRITERIA.forEach(function(c){s[c.key]={val:'Yes',reason:''};});return s;}
+  function todayISO(){var d=new Date();return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10);}
+  function fmtDate(iso){if(!iso)return '';var p=iso.split('-');if(p.length<3)return iso;return p[2]+'/'+p[1]+'/'+p[0];}
+  function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,function(m){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];});}
+  function initials(name){if(!name)return '?';return String(name).trim().split(/\s+/)[0].slice(0,1);}
+  function showToast(msg,isErr){state.toast=msg;state.toastError=!!isErr;render();setTimeout(function(){state.toast=null;render();},isErr?3200:2200);}
+
+  /* ── AUTH ────────────────────────────────────────────────────────── */
+  function checkAuth(){
+    try{
+      var raw=localStorage.getItem('rc_auth_session');
+      if(raw){
+        var sess=JSON.parse(raw);
+        if(sess&&sess.role==='admin'){
+          state.authed=true;state.role='admin';
+        }else if(sess&&sess.role==='cvc'&&sess.code){
+          state.authed=true;state.role='cvc';
+          state.volunteerCode=sess.code;state.villageCode=sess.villageCode;
+          state.cvcName=sess.name;state.cvcVillageName=sess.villageName;
+          state.view='session';state.sessionDate=todayISO();state.sessionTopics=[];
+        }
+      }
+    }catch(e){}
+    state.authChecked=true;
+    var cached=loadCachedData();if(cached)applySheetData(cached);
+    if(state.authed){
+      if(state.role==='cvc'&&state.volunteerCode){render();loadLastForVolunteer(state.volunteerCode);}
+      else loadPref();
+    }else render();
+    loadDataFromSheet({silent:true});
+  }
+  function tryLogin(user,pass){
+    if(user===ADMIN_ACCOUNT.user&&pass===ADMIN_ACCOUNT.pass){
+      state.authed=true;state.role='admin';state.loginError='';
+      try{localStorage.setItem('rc_auth_session',JSON.stringify({role:'admin'}));}catch(e){}
+      loadPref();
+      return;
+    }
+    if(!user||!pass){state.loginError='សូមបញ្ចូលឈ្មោះអ្នកប្រើ និងពាក្យសម្ងាត់';render();return;}
+    state.loginBusy=true;state.loginError='';render();
+    loginCvc(user,pass).then(function(vol){
+      state.loginBusy=false;state.authed=true;state.role='cvc';state.loginError='';
+      state.villageCode=vol.villageCode;state.volunteerCode=vol.code;
+      state.cvcName=vol.name;state.cvcVillageName=vol.villageName;
+      state.view='session';state.sessionDate=todayISO();state.sessionTopics=[];
+      try{localStorage.setItem('rc_auth_session',JSON.stringify({role:'cvc',code:vol.code,villageCode:vol.villageCode,name:vol.name,villageName:vol.villageName}));}catch(e){}
+      render();
+      loadLastForVolunteer(vol.code);
+    }).catch(function(err){
+      state.loginBusy=false;
+      state.loginError=(err&&err.message)?err.message:'ឈ្មោះអ្នកប្រើ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវ';
+      render();
+    });
+  }
+  // Checks against this app's OWN account list (KEY_RCMON_USERS) — separate
+  // from the dashboard's shared login. The CVC's "code" here is their slug
+  // code derived from their live name in KEY_CVCMAP, so a rename in CVC
+  // management (below) keeps the account working as long as the account
+  // record's cvcName is updated alongside it.
+  function loginCvc(username,password){
+    return loadCvcUsers().then(function(){
+      var u = CVC_USERS.filter(function(x){return x.username===username && x.password===password;})[0];
+      if(!u) throw new Error('ឈ្មោះអ្នកប្រើ ឬពាក្យសម្ងាត់មិនត្រឹមត្រូវ');
+      var vol = volunteerByCode[u.code];
+      if(!vol) throw new Error('គណនីនេះមិនទាន់ត្រូវបានចាត់តាំងទៅភូមិណាមួយទេ សូមទាក់ទងអ្នកគ្រប់គ្រង');
+      return vol;
+    });
+  }
+  function logout(){
+    state.authed=false;state.role=null;state.cvcName=null;state.cvcVillageName=null;
+    state.villageCode=null;state.volunteerCode=null;state.view='village';
+    try{localStorage.removeItem('rc_auth_session');}catch(e){}
+    render();
+  }
+
+  function savePref(){try{localStorage.setItem('pref_last_selection',JSON.stringify({villageCode:state.villageCode,volunteerCode:state.volunteerCode}));}catch(e){}}
+  function loadPref(){
+    try{var v=localStorage.getItem('pref_last_selection');if(v){var p=JSON.parse(v);if(p.villageCode&&villageByCode[p.villageCode])state.villageCode=p.villageCode;if(p.volunteerCode&&volunteerByCode[p.volunteerCode]&&volunteerByCode[p.volunteerCode].villageCode===state.villageCode)state.volunteerCode=p.volunteerCode;}}catch(e){}
+    render();
+  }
+  function loadLastForVolunteer(volCode){
+    try{var v=localStorage.getItem('lastmap_'+volCode);if(v){var map=JSON.parse(v);Object.keys(map).forEach(function(code){state.lastMap[code]=map[code];});}}catch(e){}
+    render();
+  }
+  function buildRecord(c,vol){
+    var st=state.childStatus[c.code]||defaultStatus();
+    return{sessionId:state.sessionId,date:state.sessionDate,topics:state.sessionTopics,childCode:c.code,childName:c.name,villageCode:c.villageCode,villageName:(villageByCode[c.villageCode]||{}).name||'',volunteerCode:vol.code,volunteerName:vol.name,attendance:st.attendance.val,attendanceReason:st.attendance.reason,health:st.health.val,healthReason:st.health.reason,education:st.education.val,educationReason:st.education.reason,protection:st.protection.val,protectionReason:st.protection.reason,participation:st.participation.val,participationReason:st.participation.reason,submittedAt:new Date().toISOString()};
+  }
+  function autoSaveChild(code){
+    var vol=volunteerByCode[state.volunteerCode];
+    var c=DB.children.filter(function(x){return x.code===code;})[0];
+    if(!c||!vol)return;
+    var record=buildRecord(c,vol);
+    state.lastMap[code]=record; state.childSaved[code]=true;
+    try{var key='draft_'+vol.code+'_'+state.sessionId;var existing=JSON.parse(localStorage.getItem(key)||'[]');var idx=existing.findIndex(function(r){return r.childCode===code;});if(idx>=0)existing[idx]=record;else existing.push(record);localStorage.setItem(key,JSON.stringify(existing));}catch(e){}
+    render();
+  }
+  function finishVisit(){
+    var vol=volunteerByCode[state.volunteerCode];
+    if(!vol){showToast('មិនអាចរកព័ត៌មានអ្នកស្ម័គ្រចិត្ត សូមចូលប្រើប្រាស់ម្តងទៀត',true);return;}
+    var kids=childrenByVolunteer[vol.code]||[];
+    for(var i=0;i<kids.length;i++){var st=state.childStatus[kids[i].code];if(!st)continue;for(var j=0;j<CRITERIA.length;j++){var f=st[CRITERIA[j].key];if(f.val==='No'&&!f.reason.trim()){state.modalChild=kids[i].code;render();showToast('សូមបំពេញមូលហេតុសម្រាប់ '+kids[i].name,true);return;}}}
+    state.busy=true;render();
+    var allRecords=kids.map(function(c){return buildRecord(c,vol);});
+    var lastMapObj={};allRecords.forEach(function(r){lastMapObj[r.childCode]=r;});
+    try{localStorage.setItem('lastmap_'+vol.code,JSON.stringify(lastMapObj));}catch(e){}
+    var village = villageByCode[vol.villageCode];
+    fmSaveVisit(vol, village, allRecords).then(function(){
+      try{localStorage.removeItem('draft_'+vol.code+'_'+state.sessionId);}catch(e){}
+      Object.keys(lastMapObj).forEach(function(code){state.lastMap[code]=lastMapObj[code];});
+      state.busy=false;state.childStatus={};state.childSaved={};state.sessionTopics=[];state.sessionId=null;state.view='done';render();
+    }).catch(function(err){state.busy=false;showToast('មានបញ្ហា៖ '+(err&&err.message?err.message:'សូមព្យាយាមម្តងទៀត'),true);render();});
+  }
+
+  function goVillage(){if(state.role==='cvc')return;state.view='village';state.volunteerCode=null;render();}
+  function pickVillage(code){state.villageCode=code;state.view='volunteer';state.villageSearch='';render();}
+  function pickVolunteer(code){
+    var vol=volunteerByCode[code];
+    if(vol && vol.unassigned){
+      state.view='cvcManage';state.cvcManageOpen={type:'assign',key:vol.villageCode};render();
+      showToast('ភូមិនេះមិនទាន់មាន CVC — សូមបន្ថែមជាមុនសិន · This village has no CVC yet — add one first',true);
+      return;
+    }
+    state.volunteerCode=code;state.view='session';state.sessionDate=todayISO();state.sessionTopics=[];savePref();loadLastForVolunteer(code);
+  }
+  function continueToChildren(){
+    if(state.sessionTopics.length===0||!state.sessionDate)return;
+    var kids=childrenByVolunteer[state.volunteerCode]||[];
+    kids.forEach(function(c){if(!state.childStatus[c.code])state.childStatus[c.code]=defaultStatus();});
+    state.sessionId=String(Date.now());state.childSaved={};state.view='children';render();
+  }
+  function openAdmin(){state.view='admin';render();loadAdminData();}
+  function closeChildModal(code){
+    if(!code){state.modalChild=null;render();return;}
+    var st=state.childStatus[code];
+    if(st){for(var j=0;j<CRITERIA.length;j++){var f=st[CRITERIA[j].key];if(f.val==='No'&&!f.reason.trim()){showToast('សូមបំពេញមូលហេតុមុននឹងបិទ',true);return;}}}
+    state.modalChild=null;render();autoSaveChild(code);
+  }
+  function startNewSession(){
+    state.childStatus={};state.childSaved={};state.sessionTopics=[];state.sessionId=null;state.lastMap={};
+    if(state.role==='cvc'){state.view='session';state.sessionDate=todayISO();}
+    else{state.view='village';state.villageCode=null;state.volunteerCode=null;}
+    render();
+  }
+
+  /* ── RENDER ──────────────────────────────────────────────────────── */
+  var root=document.getElementById('rc-app');
+  function render(){
+    if(!state.authChecked){root.innerHTML='';return;}
+    if(!state.authed){root.innerHTML=renderLogin();bindLogin();return;}
+    var html='';
+    html+=renderHeader();
+    if(state.view==='admin'){html+='<div class="rc-shell">'+renderAdminView()+'</div>';}
+    else if(state.view==='cvcManage'){html+='<div class="rc-shell">'+renderCvcManageView()+'</div>';}
+    else if(state.view==='done'){html+='<div class="rc-shell">'+renderDoneView()+'</div>';}
+    else if(state.view==='village_rc'){html+='<div class="rc-shell">'+renderVillageRcView()+'</div>';}
+    else if(state.view==='rc_detail'){html+='<div class="rc-shell">'+renderRcDetail(state.rcDetailCode)+'</div>';}
+    else{
+      html+='<div class="rc-shell">';
+      if(state.view==='village') html+=renderVillageView();
+      else if(state.view==='volunteer') html+=renderVolunteerView();
+      else if(state.view==='session') html+=renderSessionView();
+      else if(state.view==='children') html+=renderChildrenView();
+      html+='<div class="rc-footer-note">ទិន្នន័យត្រូវបានរក្សាទុកដោយស្វ័យប្រវត្តិ · ក្រុមការងារទាំងអស់អាចមើលឃើញ</div>';
+      html+='</div>';
+    }
+    if(state.modalChild) html+=renderModal(state.modalChild);
+    if(state.toast) html+='<div class="rc-toast'+(state.toastError?' is-error':'')+'">' + escapeHtml(state.toast)+'</div>';
+    root.innerHTML=html;
+    bind();
+  }
+
+  /* ── LOGIN ───────────────────────────────────────────────────────── */
+  function renderLogin(){
+    var html='<div class="rc-login-wrap"><div class="rc-login-card">';
+    html+='<div class="rc-login-mark"><svg width="28" height="28" viewBox="0 0 28 28" fill="none"><path d="M14 25s-9-5.8-12-11.5C0.5 9.6 3 5 7 5c2.5 0 4.5 1.5 5.5 3C13.5 6.5 15.5 5 18 5c4 0 6.5 4.6 4.5 8.5C19 19.2 14 25 14 25z" stroke="white" stroke-width="2" stroke-linejoin="round" fill="rgba(255,255,255,.2)"/></svg></div>';
+    html+='<div class="rc-login-title">ប្រព័ន្ធតាមដានកុមារ RC</div>';
+    html+='<div class="rc-login-sub">សូមបញ្ចូលព័ត៌មានដើម្បីចូលប្រើប្រាស់</div>';
+    if(state.loginError) html+='<div class="rc-login-error">⚠️ '+escapeHtml(state.loginError)+'</div>';
+    html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>ឈ្មោះអ្នកប្រើប្រាស់</label><input type="text" id="rc-login-user" autocomplete="username" placeholder="ឈ្មោះអ្នកប្រើប្រាស់"/></div>';
+    html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>ពាក្យសម្ងាត់</label><input type="password" id="rc-login-pass" autocomplete="current-password" placeholder="ពាក្យសម្ងាត់"/></div>';
+    html+='<button type="button" class="rc-login-btn" id="rc-login-btn"'+(state.loginBusy?' disabled':'')+'>'+(state.loginBusy?'កំពុងផ្ទៀងផ្ទាត់...':'ចូលប្រើប្រាស់ →')+'</button>';
+    html+='<div class="rc-login-note">ប្រសិនបើអ្នកមិនទាន់មានគណនី សូមទាក់ទងអ្នកសម្របសម្រួលកម្មវិធី</div>';
+    html+='</div></div>';
+    return html;
+  }
+  function bindLogin(){
+    var btn=document.getElementById('rc-login-btn');
+    var userEl=document.getElementById('rc-login-user');
+    var passEl=document.getElementById('rc-login-pass');
+    if(!btn)return;
+    function attempt(){if(state.loginBusy)return;tryLogin((userEl.value||'').trim(),passEl.value||'');}
+    btn.addEventListener('click',attempt);
+    [userEl,passEl].forEach(function(el){el.addEventListener('keydown',function(e){if(e.key==='Enter')attempt();});});
+    userEl.focus();
+  }
+
+  /* ── HEADER ──────────────────────────────────────────────────────── */
+  function renderHeader(){
+    var isAdmin=state.view==='admin';
+    var showTrail = !isAdmin && state.view!=='done' && state.view!=='village_rc' && state.view!=='rc_detail';
+    var h=new Date().getHours();
+    var greeting = h<12?'🌅 អរុណសួស្ដី' : h<17?'☀️ ទិវាសួស្ដី':'🌙 សាយណ្ហសួស្ដី';
+    var displayName = state.cvcName || (state.role==='admin'?'Admin':'');
+    var totalKids   = DB.children.length;
+    var totalVols   = DB.volunteers.length;
+    var totalVills  = DB.villages.length;
+    var adminBtn = state.role==='admin'?(
+      '<button class="rc-admin-btn" data-act="admin">'+
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 3v18h18"/><path d="M7 16l4-6 4 3 5-8"/></svg>'+
+        (isAdmin?'ត្រឡប់':'ទិន្នន័យ')+
+      '</button>'
+    ):'';
+    var statsStrip = (!isAdmin && state.view!=='done')?(
+      '<div class="rc-dash-stats">'+
+        '<div class="rc-dash-stat">'+
+          '<span class="rc-dash-stat-icon">👶</span>'+
+          '<div><b>'+totalKids+'</b><span>កុមារ</span></div>'+
+        '</div>'+
+        '<div class="rc-dash-stat-divider"></div>'+
+        '<div class="rc-dash-stat">'+
+          '<span class="rc-dash-stat-icon">🤝</span>'+
+          '<div><b>'+totalVols+'</b><span>អ្នកស្ម័គ្រចិត្ត</span></div>'+
+        '</div>'+
+        '<div class="rc-dash-stat-divider"></div>'+
+        '<div class="rc-dash-stat">'+
+          '<span class="rc-dash-stat-icon">🏘️</span>'+
+          '<div><b>'+totalVills+'</b><span>ភូមិ</span></div>'+
+        '</div>'+
+      '</div>'
+    ):'';
+    return '<div class="rc-shell" style="padding-bottom:0;">'+
+      '<div class="rc-hero rc-hero-v2">'+
+        renderPlayingChildrenBg()+
+        '<div class="rc-hero-v2-glow"></div>'+
+        '<div class="rc-hero-content">'+
+          '<div class="rc-header">'+
+            '<div class="rc-brand">'+
+              '<div class="rc-mark rc-mark-v2">'+
+                '<svg width="24" height="24" viewBox="0 0 30 30" fill="none"><circle cx="8" cy="7" r="2.6" fill="white"/><path d="M3 21l2-7c.4-1.3 1.5-2 2.8-2h.4c1.3 0 2.4.7 2.8 2l2 7" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none"/><circle cx="20" cy="9" r="2.6" fill="white"/><path d="M15.5 21l1.7-6c.35-1.2 1.4-1.9 2.6-1.9h.4c1.2 0 2.25.7 2.6 1.9l1.7 6" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M9 21l1.5-4M21 21l-1.3-3.5" stroke="white" stroke-width="1.6" stroke-linecap="round"/></svg>'+
+              '</div>'+
+              '<div>'+
+                '<div class="rc-title">តាមដានកុមារ RC</div>'+
+                '<div class="rc-subtitle">មង្គលបុរី ២ · បន្ទាយមានជ័យ</div>'+
+              '</div>'+
+            '</div>'+
+            '<div class="rc-header-actions">'+
+              adminBtn+
+              '<button class="rc-logout-btn" data-act="logout">'+
+                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:4px"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>ចាកចេញ'+
+              '</button>'+
+            '</div>'+
+          '</div>'+
+          (displayName && !isAdmin && state.view!=='done' ?
+            '<div class="rc-hero-greeting">'+
+              '<span>'+greeting+'</span>'+
+              (displayName ? ' <span class="rc-greeting-name">'+escapeHtml(displayName)+'!</span>' : '')+
+            '</div>'
+          : '')+
+          statsStrip+
+          (showTrail?renderTrail():'')+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  }
+
+  function renderPlayingChildrenBg(){
+    return '<svg class="rc-hero-bg" viewBox="0 0 380 130" preserveAspectRatio="xMidYMin meet" xmlns="http://www.w3.org/2000/svg">'+
+      /* ── Football pitch background stripes ── */
+      '<rect x="0" y="0" width="380" height="130" fill="#1a7a38" opacity="0.55"/>'+
+      '<rect x="0" y="0" width="38" height="130" fill="#1e8a40" opacity="0.4"/>'+
+      '<rect x="76" y="0" width="38" height="130" fill="#1e8a40" opacity="0.4"/>'+
+      '<rect x="152" y="0" width="38" height="130" fill="#1e8a40" opacity="0.4"/>'+
+      '<rect x="228" y="0" width="38" height="130" fill="#1e8a40" opacity="0.4"/>'+
+      '<rect x="304" y="0" width="38" height="130" fill="#1e8a40" opacity="0.4"/>'+
+      /* ── Centre circle ── */
+      '<circle cx="190" cy="115" r="38" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="1.5"/>'+
+      '<line x1="190" y1="77" x2="190" y2="130" stroke="rgba(255,255,255,0.15)" stroke-width="1.5"/>'+
+      /* ── Left goal ── */
+      '<rect x="0" y="88" width="18" height="28" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.8"/>'+
+      /* ── Right goal ── */
+      '<rect x="362" y="88" width="18" height="28" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="1.8"/>'+
+      /* ── Ground grass line ── */
+      '<path d="M0 108 Q95 100 190 105 T380 100 V130 H0 Z" fill="#176b30" opacity="0.7"/>'+
+
+      /* ── Trophy cup (center top) ── */
+      '<g transform="translate(183,14) scale(0.65)" opacity="0.9">'+
+        '<path d="M-14 0 L14 0 L10 28 Q0 34 -10 28 Z" fill="#f5c823" stroke="#e0a800" stroke-width="1.2"/>'+
+        '<rect x="-6" y="28" width="12" height="8" rx="2" fill="#e0a800"/>'+
+        '<rect x="-10" y="36" width="20" height="4" rx="2" fill="#f5c823"/>'+
+        '<path d="M14 4 Q24 4 24 14 Q24 24 14 26" fill="none" stroke="#f5c823" stroke-width="3" stroke-linecap="round"/>'+
+        '<path d="M-14 4 Q-24 4 -24 14 Q-24 24 -14 26" fill="none" stroke="#f5c823" stroke-width="3" stroke-linecap="round"/>'+
+        '<rect x="-3" y="2" width="6" height="3" rx="1" fill="rgba(255,255,255,0.5)"/>'+
+        '<text x="0" y="22" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff" opacity="0.9">⭐</text>'+
+      '</g>'+
+
+      /* ── Stars around trophy ── */
+      '<text x="157" y="24" font-size="9" opacity="0.8">⭐</text>'+
+      '<text x="215" y="22" font-size="9" opacity="0.8">⭐</text>'+
+      '<text x="143" y="38" font-size="7" opacity="0.6">✨</text>'+
+      '<text x="228" y="38" font-size="7" opacity="0.6">✨</text>'+
+
+      /* ── Child 1: kicking pose (left, wearing red/white) ── */
+      '<g transform="translate(68,104) scale(0.62)" style="animation:footballKick1 1.4s ease-in-out infinite;">'+
+        '<ellipse cx="0" cy="36" rx="11" ry="3.5" fill="rgba(0,0,0,0.12)"/>'+
+        /* legs kicking */
+        '<path d="M-5 22l-8 18M5 22l4 14l10-4" stroke="#1565c0" stroke-width="5.5" stroke-linecap="round"/>'+
+        /* body */
+        '<rect x="-10" y="8" width="20" height="16" rx="5" fill="#e53935"/>'+
+        /* white stripe */
+        '<rect x="-10" y="13" width="20" height="3" rx="1" fill="rgba(255,255,255,0.6)"/>'+
+        /* arms */
+        '<path d="M-10 12l-10 6" stroke="#ffcc94" stroke-width="4.5" stroke-linecap="round"/>'+
+        '<path d="M10 12l12-4" stroke="#ffcc94" stroke-width="4.5" stroke-linecap="round"/>'+
+        /* head */
+        '<circle cx="0" cy="0" r="9" fill="#ffcc94"/>'+
+        '<path d="M-8-4c0-5 3-9 8-9s8 4 8 9" fill="#4a2800"/>'+
+        '<circle cx="-3" cy="1" r="1.2" fill="#333"/><circle cx="3" cy="1" r="1.2" fill="#333"/>'+
+        '<path d="M-3 6q3 2 6 0" stroke="#333" stroke-width="1.2" fill="none" stroke-linecap="round"/>'+
+        /* shoe */
+        '<ellipse cx="14" cy="35" rx="7" ry="3.5" fill="#333" transform="rotate(-20,14,35)"/>'+
+      '</g>'+
+
+      /* ── Football being kicked ── */
+      '<g transform="translate(95,87)" style="animation:ballRoll 1.4s ease-in-out infinite;">'+
+        '<circle cx="0" cy="0" r="8" fill="white" stroke="#ccc" stroke-width="0.5"/>'+
+        '<path d="M0-8 L3-3 L8-1 L5 3 L7 8 L2 6 L-3 8 L-4 3 L-8 0 L-5-4 Z" fill="none" stroke="#222" stroke-width="0.8" opacity="0.5"/>'+
+        '<circle cx="-1" cy="-1" r="3.5" fill="#222" opacity="0.7"/>'+
+        '<circle cx="3" cy="4" r="2" fill="#222" opacity="0.5"/>'+
+        '<circle cx="-4" cy="3" r="1.8" fill="#222" opacity="0.4"/>'+
+      '</g>'+
+
+      /* ── Child 2: jumping celebrate (centre, yellow/green) ── */
+      '<g transform="translate(175,92) scale(0.65)" style="animation:footballJump2 1.6s ease-in-out infinite;">'+
+        '<ellipse cx="0" cy="36" rx="12" ry="3.5" fill="rgba(0,0,0,0.12)"/>'+
+        /* legs jumping up */
+        '<path d="M-5 22l-5 14M5 22l5 14" stroke="#1b5e20" stroke-width="5.5" stroke-linecap="round"/>'+
+        /* body */
+        '<rect x="-11" y="8" width="22" height="16" rx="5" fill="#f5c823"/>'+
+        '<rect x="-11" y="14" width="22" height="3" rx="1" fill="rgba(0,100,40,0.4)"/>'+
+        /* arms up celebrating */
+        '<path d="M-11 12l-14-10" stroke="#ffd9a8" stroke-width="4.5" stroke-linecap="round"/>'+
+        '<path d="M11 12l14-10" stroke="#ffd9a8" stroke-width="4.5" stroke-linecap="round"/>'+
+        /* head */
+        '<circle cx="0" cy="0" r="9.5" fill="#ffd9a8"/>'+
+        '<path d="M-9-3c0-6 4-10 9-10s9 4 9 10" fill="#2a1600"/>'+
+        '<circle cx="-3" cy="2" r="1.3" fill="#333"/><circle cx="3" cy="2" r="1.3" fill="#333"/>'+
+        '<path d="M-4 7q4 3 8 0" stroke="#333" stroke-width="1.3" fill="none" stroke-linecap="round"/>'+
+        /* excited mouth open */
+        '<path d="M-3 8q3 5 6 0" fill="#c0392b" opacity="0.8"/>'+
+      '</g>'+
+
+      /* ── Child 3: running dribble (right, blue/white) ── */
+      '<g transform="translate(270,100) scale(0.62)" style="animation:footballRun3 1.2s ease-in-out infinite;">'+
+        '<ellipse cx="0" cy="38" rx="11" ry="3.5" fill="rgba(0,0,0,0.12)"/>'+
+        /* legs running */
+        '<path d="M-5 22l-7 16M5 22l9 12" stroke="#0d47a1" stroke-width="5.5" stroke-linecap="round"/>'+
+        /* body */
+        '<rect x="-10" y="8" width="20" height="16" rx="5" fill="#1565c0"/>'+
+        '<path d="M-10 13 L10 13" stroke="white" stroke-width="2.5" opacity="0.6"/>'+
+        /* arms running */
+        '<path d="M10 13l12 8" stroke="#ffcc94" stroke-width="4.5" stroke-linecap="round"/>'+
+        '<path d="M-10 14l-12-6" stroke="#ffcc94" stroke-width="4.5" stroke-linecap="round"/>'+
+        /* head */
+        '<circle cx="0" cy="0" r="9" fill="#e8b896"/>'+
+        '<path d="M-8-4c0-5 3-9 8-9s8 4 8 9" fill="#1f1f1f"/>'+
+        '<circle cx="-3" cy="1" r="1.2" fill="#333"/><circle cx="3" cy="1" r="1.2" fill="#333"/>'+
+        '<path d="M-3 6q3 2 6 0" stroke="#333" stroke-width="1.1" fill="none" stroke-linecap="round"/>'+
+      '</g>'+
+
+      /* ── Small football near child 3 ── */
+      '<g transform="translate(290,108)" style="animation:ballBounce 0.9s ease-in-out infinite;">'+
+        '<circle cx="0" cy="0" r="6" fill="white"/>'+
+        '<circle cx="-1" cy="-1" r="2.5" fill="#222" opacity="0.7"/>'+
+        '<circle cx="2.5" cy="3" r="1.6" fill="#222" opacity="0.5"/>'+
+        '<circle cx="-3" cy="2.5" r="1.4" fill="#222" opacity="0.4"/>'+
+      '</g>'+
+
+      /* ── Crowd/fans waving flags (background, small) ── */
+      '<g opacity="0.55">'+
+        '<rect x="18" y="55" width="3" height="14" fill="#ccc" rx="1"/>'+
+        '<rect x="19" y="55" width="9" height="6" rx="1" fill="#e53935"/>'+
+        '<rect x="38" y="50" width="3" height="16" fill="#ccc" rx="1"/>'+
+        '<rect x="39" y="50" width="9" height="6" rx="1" fill="#f5c823"/>'+
+        '<rect x="330" y="52" width="3" height="15" fill="#ccc" rx="1"/>'+
+        '<rect x="331" y="52" width="9" height="6" rx="1" fill="#1565c0"/>'+
+        '<rect x="350" y="48" width="3" height="16" fill="#ccc" rx="1"/>'+
+        '<rect x="351" y="48" width="9" height="6" rx="1" fill="#e53935"/>'+
+      '</g>'+
+
+      /* ── Scoreboard banner top ── */
+      '<rect x="130" y="0" width="120" height="12" rx="3" fill="rgba(0,0,0,0.25)"/>'+
+      '<text x="190" y="9" text-anchor="middle" font-size="7" fill="white" font-family="Arial,sans-serif" font-weight="bold" opacity="0.9">🏆 WORLD CUP 2026 ⚽</text>'+
+
+    '</svg>';
+  }
+
+  /* ── TRAIL ───────────────────────────────────────────────────────── */
+  function renderTrail(){
+    var locked=state.role==='cvc';
+    var villName=(villageByCode[state.villageCode]||{}).name||state.cvcVillageName||null;
+    var volName=(volunteerByCode[state.volunteerCode]||{}).name||state.cvcName||null;
+    var hasSession=state.sessionTopics.length>0;
+    var icons=['🏘️','👤','📅','👶'];
+    var html='<div class="rc-trail">';
+    html+=trailPill(1,icons[0],villName||'ភូមិ',state.view==='village',!!villName,locked?null:'village');
+    html+='<span class="rc-trail-arrow">›</span>';
+    html+=trailPill(2,icons[1],volName||'ឈ្មោះ',state.view==='volunteer',!!volName,locked?null:(villName?'volunteer':null));
+    html+='<span class="rc-trail-arrow">›</span>';
+    html+=trailPill(3,icons[2],hasSession?fmtDate(state.sessionDate):'កាលបរិច្ឆេទ',state.view==='session',hasSession,volName?'session':null);
+    html+='<span class="rc-trail-arrow">›</span>';
+    html+=trailPill(4,icons[3],'កុមារ',state.view==='children',false,null);
+    html+='</div>';
+    return html;
+  }
+  function trailPill(num,icon,label,active,done,goTarget){
+    var cls='rc-trail-pill'+(active?' is-active':'')+(done&&!active?' is-done':'');
+    var attr=goTarget?' data-act="go" data-target="'+goTarget+'"':'';
+    var numContent=done&&!active?'✓':icon;
+    return '<button type="button" class="'+cls+'"'+attr+'><span class="rc-trail-num">'+numContent+'</span><span class="lbl">'+escapeHtml(label)+'</span></button>';
+  }
+
+  /* ── VILLAGE VIEW ────────────────────────────────────────────────── */
+  function renderVillageView(){
+    var q=state.villageSearch.trim().toLowerCase();
+    var html='<div class="rc-card">';
+    html+='<div class="rc-section-title">🏘️ ជ្រើសរើសភូមិ</div>';
+    html+='<div class="rc-section-sub">ស្វែងរក ឬជ្រើសរើសភូមិដែលលោកអ្នកនឹងចុះតាមដាន</div>';
+    html+='<input class="rc-search" type="text" placeholder="ស្វែងរកឈ្មោះភូមិ..." value="'+escapeHtml(state.villageSearch)+'" data-bind="villageSearch"/>';
+    html+='<div class="rc-commune-tabs">';
+    html+='<button type="button" class="rc-chip'+(state.communeFilter==='all'?' is-on':'')+'" data-act="commune" data-c="all">ឃុំទាំងអស់</button>';
+    DB.communes.forEach(function(cc){
+      html+='<button type="button" class="rc-chip'+(state.communeFilter===cc.code?' is-on':'')+'" data-act="commune" data-c="'+cc.code+'">'+escapeHtml(cc.name)+'</button>';
+    });
+    html+='</div>';
+    var list=DB.villages.filter(function(v){
+      if(state.communeFilter!=='all'&&v.communeCode!==state.communeFilter)return false;
+      if(q&&v.name.toLowerCase().indexOf(q)===-1)return false;
+      return true;
+    }).sort(function(a,b){return a.name.localeCompare(b.name,'km');});
+    html+='<div class="rc-list">';
+    if(state.dataLoading&&DB.villages.length===0){
+      html+='<div class="rc-loading"><span class="rc-spin"></span> កំពុងទាញយកទិន្នន័យ...</div>';
+    } else if(state.dataError&&DB.villages.length===0){
+      html+='<div class="rc-empty">⚠️ មិនអាចទាញយកទិន្នន័យ<br><br><button type="button" class="rc-export-btn" data-act="refreshSheetData" style="margin:0 auto;display:flex;">ព្យាយាមម្តងទៀត</button></div>';
+    } else if(list.length===0){
+      html+='<div class="rc-empty">រកមិនឃើញភូមិ</div>';
+    } else {
+      list.forEach(function(v){
+        var volCount=(volunteersByVillage[v.code]||[]).length;
+        var commune=communeByCode[v.communeCode];
+        html+='<button type="button" class="rc-pick-row" data-act="village" data-v="'+v.code+'">'+
+          '<div class="rc-pick-main">'+
+            '<div class="rc-pick-name">'+escapeHtml(v.name)+'</div>'+
+            '<div class="rc-pick-meta">ឃុំ'+escapeHtml(commune?commune.name:'')+' · '+ escapeHtml(v.code)+'</div>'+
+          '</div>'+
+          '<div style="display:flex;align-items:center;gap:8px;">'+
+          '<span class="rc-count-badge">'+volCount+' នាក់</span>'+
+          '<span class="rc-pick-arrow">›</span></div>'+
+        '</button>';
+      });
+    }
+    html+='</div></div>';
+    return html;
+  }
+
+  /* ── VOLUNTEER VIEW ──────────────────────────────────────────────── */
+  function renderVolunteerView(){
+    var village=villageByCode[state.villageCode];
+    var html='<div class="rc-card">';
+    if(!village){html+='<div class="rc-empty">សូមជ្រើសរើសភូមិជាមុន</div></div>';return html;}
+    html+='<div class="rc-section-title">👤 ភូមិ'+escapeHtml(village.name)+'</div>';
+    html+='<div class="rc-section-sub">ជ្រើសរើសឈ្មោះអ្នកស្ម័គ្រចិត្តរបស់អ្នក</div>';
+    var vols=(volunteersByVillage[village.code]||[]).slice().sort(function(a,b){return a.name.localeCompare(b.name,'km');});
+    html+='<div class="rc-list">';
+    if(vols.length===0){
+      html+='<div class="rc-empty">មិនទាន់មានអ្នកស្ម័គ្រចិត្ត</div>';
+    } else {
+      vols.forEach(function(v){
+        var n=(childrenByVolunteer[v.code]||[]).length;
+        html+='<button type="button" class="rc-pick-row" data-act="volunteer" data-vol="'+escapeHtml(v.code)+'">'+
+          '<div class="rc-pick-main">'+
+            '<div class="rc-pick-name">'+escapeHtml(v.name)+'</div>'+
+            '<div class="rc-pick-meta">កូដ: '+escapeHtml(v.code.split('-')[0])+'</div>'+
+          '</div>'+
+          '<div style="display:flex;align-items:center;gap:8px;"><span class="rc-count-badge">'+n+' កុមារ</span><span class="rc-pick-arrow">›</span></div>'+
+        '</button>';
+      });
+    }
+    html+='</div></div>';
+    return html;
+  }
+
+  /* ── SESSION VIEW ────────────────────────────────────────────────── */
+  function renderSessionView(){
+    var vol=volunteerByCode[state.volunteerCode];
+    var html='<div class="rc-card">';
+    if(!vol){html+='<div class="rc-empty">សូមជ្រើសរើសអ្នកស្ម័គ្រចិត្ត</div></div>';return html;}
+    html+='<div class="rc-section-title">👋 សួស្តី '+escapeHtml(vol.name)+'!</div>';
+    html+='<div class="rc-section-sub">បំពេញកាលបរិច្ឆេទ និងប្រធានបទ មុននឹងចូលទៅតាមដានកុមារ</div>';
+    html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>ថ្ងៃទីតាមដាន</label><input type="date" id="rc-session-date" value="'+escapeHtml(state.sessionDate)+'" max="'+todayISO()+'"/></div>';
+    html+='<div class="rc-field"><label><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>ប្រធានបទ (អាចជ្រើសច្រើន)</label>';
+    html+='<div class="rc-topic-grid">';
+    (DB.topics||[]).forEach(function(t,i){
+      var on=state.sessionTopics.indexOf(t)!==-1;
+      html+='<div class="rc-topic-opt'+(on?' is-on':'')+'" data-topic="'+i+'"><span class="rc-topic-check">'+(on?'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>':'')+'</span>'+escapeHtml(t)+'</div>';
+    });
+    html+='</div></div>';
+    var villKidCount=(childrenByVillage[vol.villageCode]||[]).length;
+    html+='<button type="button" class="rc-link-btn" data-act="go" data-target="village_rc">';
+    html+='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    html+='មើលកុមារទាំងអស់ក្នុងភូមិ ('+villKidCount+'នាក់)</button>';
+    var canContinue=state.sessionTopics.length>0&&!!state.sessionDate;
+    var kidCount=(childrenByVolunteer[vol.code]||[]).length;
+    html+='<button type="button" class="rc-continue-btn" id="rc-session-continue"'+(canContinue?'':' disabled')+'>';
+    html+='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>';
+    html+='បន្តទៅកុមារ ('+kidCount+'នាក់)</button>';
+    html+='</div>';
+    return html;
+  }
+
+  /* ── VILLAGE RC VIEW (read-only: all children in the volunteer's village) ── */
+  function renderVillageRcView(){
+    var vol=volunteerByCode[state.volunteerCode];
+    var html='<div class="rc-card">';
+    if(!vol){html+='<div class="rc-empty">សូមជ្រើសរើសអ្នកស្ម័គ្រចិត្ត</div></div>';return html;}
+    html+='<div class="rc-back-row"><button type="button" class="rc-back-btn" data-act="go" data-target="session">'+
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> ត្រឡប់</button></div>';
+    var villName=villageByCode[vol.villageCode]?villageByCode[vol.villageCode].name:vol.villageName;
+    html+='<div class="rc-section-title">👶 កុមារទាំងអស់ក្នុងភូមិ '+escapeHtml(villName||'')+'</div>';
+    var kids=(childrenByVillage[vol.villageCode]||[]).slice();
+    html+='<div class="rc-section-sub">បញ្ជីនេះសម្រាប់មើលប៉ុណ្ណោះ រួមមានកុមារទាំងអស់ដែលរស់នៅក្នុងភូមិនេះ</div>';
+    html+='<input type="text" class="rc-rc-search" placeholder="ស្វែងរកតាមឈ្មោះកុមារ..." data-bind="rcSearch" value="'+escapeHtml(state.rcSearch||'')+'"/>';
+
+    var q=(state.rcSearch||'').trim().toLowerCase();
+    if(q){kids=kids.filter(function(c){return (c.name||'').toLowerCase().indexOf(q)!==-1;});}
+    kids.sort(function(a,b){return (a.name||'').localeCompare(b.name||'','km');});
+
+    if(kids.length===0){
+      html+='<div class="rc-empty">'+(q?'រកមិនឃើញកុមារដែលត្រូវនឹងការស្វែងរក':'មិនមានកុមារក្នុងភូមិនេះនៅឡើយ')+'</div>';
+    }
+    kids.forEach(function(c){
+      html+='<button type="button" class="rc-child-row" data-act="viewRc" data-c="'+escapeHtml(c.code)+'">';
+      if(c.photo){html+='<img class="rc-avatar" src="'+escapeHtml(c.photo)+'" alt="" onerror="this.style.display=\'none\'">';}
+      else{html+='<div class="rc-avatar">'+escapeHtml(initials(c.name))+'</div>';}
+      html+='<div class="rc-child-info">'+
+        '<div class="rc-child-name">'+escapeHtml(c.name)+'</div>'+
+        '<div class="rc-child-meta">'+escapeHtml(c.gender||'')+' · '+escapeHtml(c.age||'-')+'ឆ្នាំ'+
+          (c.volunteerCode&&volunteerByCode[c.volunteerCode]?' · អ្នកមើលថែ៖ '+escapeHtml(volunteerByCode[c.volunteerCode].name):'')+
+        '</div>';
+      html+='</div>';
+      html+='<span class="rc-pick-arrow2">›</span>';
+      html+='</button>';
+    });
+    html+='</div>';
+    return html;
+  }
+
+  function renderRcDetail(code){
+    var c=DB.children.filter(function(x){return x.code===code;})[0];
+    var html='<div class="rc-card">';
+    if(!c){html+='<div class="rc-empty">រកមិនឃើញកុមារនេះ</div></div>';return html;}
+    html+='<div class="rc-back-row"><button type="button" class="rc-back-btn" data-act="go" data-target="village_rc">'+
+      '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> ត្រឡប់</button></div>';
+    html+='<div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:18px;">';
+    if(c.photo){html+='<img class="rc-avatar" style="width:72px;height:72px;font-size:24px;" src="'+escapeHtml(c.photo)+'" alt="" onerror="this.style.display=\'none\'">';}
+    else{html+='<div class="rc-avatar" style="width:72px;height:72px;font-size:24px;">'+escapeHtml(initials(c.name))+'</div>';}
+    html+='<div class="rc-section-title" style="margin:0;">'+escapeHtml(c.name)+'</div>';
+    html+='</div>';
+    var villName=villageByCode[c.villageCode]?villageByCode[c.villageCode].name:'';
+    var d=c.detail||null;
+
+    function section(title,rows){
+      var out='<div class="rc-section-title" style="font-size:13px;margin:18px 0 8px;">'+escapeHtml(title)+'</div>';
+      out+='<div style="display:flex;flex-direction:column;gap:2px;">';
+      rows.forEach(function(r){
+        var val=r[1];
+        if(val===''||val==null) val='-';
+        out+='<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);">'+
+          '<span style="color:var(--ink-soft);font-size:12.5px;flex-shrink:0;">'+escapeHtml(r[0])+'</span>'+
+          '<span style="font-weight:700;font-size:13px;text-align:right;">'+escapeHtml(String(val))+'</span>'+
+        '</div>';
+      });
+      out+='</div>';
+      return out;
+    }
+
+    html+=section('ព័ត៌មានទូទៅ',[
+      ['លេខកូដកុមារ',c.code],
+      ['ភេទ',c.gender],
+      ['អាយុ',(c.age||'-')+' ឆ្នាំ'],
+      ['ភូមិ',villName],
+      ['អ្នកស្ម័គ្រចិត្តទទួលបន្ទុក',c.volunteerCode&&volunteerByCode[c.volunteerCode]?volunteerByCode[c.volunteerCode].name:'-'],
+      ['ចំនួនថ្ងៃផុតកំណត់',c.overdue!=null?c.overdue+' ថ្ងៃ':'-']
+    ]);
+
+    if(d){
+      html+=section('កំណើត និងអត្តសញ្ញាណ',[
+        ['ឈ្មោះជាអក្សរឡាទីន',d.nameEn],
+        ['ភេទ (English)',d.genderEn],
+        ['សំបុត្រកំណើត',d.birthCertificate],
+        ['ថ្ងៃខែឆ្នាំកំណើត',d.birthDate],
+        ['ផ្ទៀងផ្ទាត់ថ្ងៃកំណើត',d.birthDateVerified],
+        ['ស្ថានភាព RC',d.rcStatus],
+        ['ឈ្មោះភូមិ (កូដកម្មវិធី)',d.villageNameEn]
+      ]);
+      html+=section('វត្តមាន និងស្ថានភាពកុមារ',[
+        ['វត្តមានកុមារ',d.presentStatusKm||d.presentStatus],
+        ['មូលហេតុចាកចេញបណ្តោះអាសន្ន',d.absentReasonKm||d.absentReason]
+      ]);
+      html+=section('ការសិក្សា',[
+        ['កម្រិតវប្បធម៌',d.educationLevel],
+        ['ថ្នាក់រៀន',d.gradeCourse]
+      ]);
+      html+=section('គ្រួសារ',[
+        ['ឈ្មោះមាតា',d.motherName],
+        ['ឈ្មោះមាតា (English)',d.motherNameEn],
+        ['ឈ្មោះបិតា',d.fatherName],
+        ['ឈ្មោះបិតា (English)',d.fatherNameEn],
+        ['បងប្អូនប្រុស',d.brothers],
+        ['បងប្អូនស្រី',d.sisters]
+      ]);
+      html+=section('អ្នកឧបត្ថម្ភ (Sponsor)',[
+        ['គណនីអ្នកឧបត្ថម្ភ',d.sponsorAccount],
+        ['ឈ្មោះអ្នកឧបត្ថម្ភ (English)',d.sponsorNameEn],
+        ['ឈ្មោះអ្នកឧបត្ថម្ភ (Khmer)',d.sponsorNameKm]
+      ]);
+      html+=section('កម្មវិធី និងការតាមដាន',[
+        ['ចូលរួមសកម្មភាព SNC',d.sncActivity],
+        ['ចូលរួមសកម្មភាពកម្មវិធី',d.programActivity],
+        ['ឈ្មោះ CVC',d.cvcName],
+        ['លេខកូដ CVC',d.cvcId],
+        ['ស្ថានភាពការតាមដាន',d.monitoringStatus]
+      ]);
+    } else {
+      html+='<div class="rc-empty" style="margin-top:14px;">មិនមានទិន្នន័យលម្អិតបន្ថែមសម្រាប់កុមារនេះ</div>';
+    }
+    html+='</div>';
+    return html;
+  }
+
+  /* ── CHILDREN VIEW ───────────────────────────────────────────────── */
+  function criterionSummary(code){
+    var st=state.childStatus[code];
+    if(!st)return{issues:0,labels:[]};
+    var issues=0,labels=[];
+    CRITERIA.forEach(function(c){if(st[c.key].val==='No'){issues++;labels.push(c.icon+' '+c.label);}});
+    return{issues:issues,labels:labels};
+  }
+
+  function renderChildrenView(){
+    var vol=volunteerByCode[state.volunteerCode];
+    var html='<div class="rc-card">';
+    if(!vol){html+='<div class="rc-empty">...</div></div>';return html;}
+    var kids=(childrenByVolunteer[vol.code]||[]).slice();
+    html+='<div class="rc-section-title">👶 កុមារទទួលបន្ទុក</div>';
+    html+='<div class="rc-session-summary">'+
+      '<span>📅 '+fmtDate(state.sessionDate)+'</span>'+
+      '<span style="opacity:.6">·</span>'+
+      '<span>📋 '+escapeHtml(state.sessionTopics.join(', '))+'</span>'+
+    '</div>';
+    html+='<div class="rc-section-sub">ចុចលើកុមារណាម្នាក់ដែលមានបញ្ហា ដើម្បីផ្លាស់ប្តូរ — ល្អជាលំនាំដើម</div>';
+    if(state.busy){html+='<div class="rc-loading"><span class="rc-spin"></span> កំពុងបញ្ចប់...</div>';}
+    html+='<div class="rc-sort-row"><span style="font-size:11.5px;color:var(--ink-soft);">តម្រៀបតាម</span>'+
+      '<select data-bind="sortMode">'+
+        '<option value="issues"'+(state.sortMode==='issues'?' selected':'')+'>🔴 មានបញ្ហាមុន</option>'+
+        '<option value="overdue"'+(state.sortMode==='overdue'?' selected':'')+'>⏰ ត្រូវការតាមដានមុន</option>'+
+        '<option value="name"'+(state.sortMode==='name'?' selected':'')+'>🔤 ឈ្មោះ</option>'+
+      '</select></div>';
+
+    if(state.sortMode==='issues') kids.sort(function(a,b){return criterionSummary(b.code).issues-criterionSummary(a.code).issues;});
+    else if(state.sortMode==='overdue') kids.sort(function(a,b){return(b.overdue||0)-(a.overdue||0);});
+    else kids.sort(function(a,b){return a.name.localeCompare(b.name,'km');});
+
+    var anyIssues=0,savedCount=0;
+    kids.forEach(function(c){
+      var sum=criterionSummary(c.code);
+      if(sum.issues>0) anyIssues++;
+      if(state.childSaved[c.code]) savedCount++;
+      html+='<button type="button" class="rc-child-row'+(sum.issues>0?' has-issue':'')+'" data-act="openChild" data-c="'+escapeHtml(c.code)+'">';
+      if(c.photo){html+='<img class="rc-avatar" src="'+escapeHtml(c.photo)+'" alt="" onerror="this.style.display=\'none\'">';}
+      else{html+='<div class="rc-avatar">'+escapeHtml(initials(c.name))+'</div>';}
+      html+='<div class="rc-child-info">'+
+        '<div class="rc-child-name">'+escapeHtml(c.name)+
+          (sum.issues>0?'<span class="rc-tag bad">⚠️ '+sum.issues+' បញ្ហា</span>':'<span class="rc-tag ok">✓ ល្អ</span>')+
+        '</div>'+
+        '<div class="rc-child-meta">'+escapeHtml(c.gender||'')+' · '+escapeHtml(c.age||'-')+'ឆ្នាំ'+(c.overdue!=null?' · '+c.overdue+'ថ្ងៃ':'')+'</div>';
+      if(sum.issues>0) html+='<div class="rc-last" style="color:var(--clay);">'+escapeHtml(sum.labels.join(' · '))+'</div>';
+      if(state.childSaved[c.code]) html+='<div class="rc-last" style="color:var(--ok-fg);">✓ បានរក្សាទុក</div>';
+      html+='</div>';
+      html+='<span class="rc-pick-arrow2">›</span>';
+      html+='</button>';
+    });
+
+    if(kids.length>0){
+      html+='<div class="rc-sticky-submit">'+
+        '<div class="rc-sticky-text"><b>'+savedCount+'</b>/'+kids.length+' · <b style="color:'+(anyIssues>0?'var(--clay)':'var(--ok-fg)')+'">'+anyIssues+' បញ្ហា</b></div>'+
+        '<button type="button" class="rc-submit-btn" id="rc-submit-session"'+(state.busy?' disabled':'')+'>'+
+          (state.busy?'<span class="rc-spin"></span> ...':'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> បញ្ចប់')+
+        '</button>'+
+      '</div>';
+    }
+    html+='</div>';
+    return html;
+  }
+
+  /* ── MODAL ───────────────────────────────────────────────────────── */
+  function renderModal(childCode){
+    var c=DB.children.filter(function(x){return x.code===childCode;})[0];
+    if(!c)return '';
+    var st=state.childStatus[c.code]||defaultStatus();
+    var html='<div class="rc-overlay" data-act="overlay"><div class="rc-modal" data-stop="1">';
+    html+='<div class="rc-modal-head">';
+    if(c.photo) html+='<img class="rc-modal-avatar" src="'+escapeHtml(c.photo)+'" onerror="this.style.display=\'none\'">';
+    else html+='<div class="rc-avatar rc-modal-avatar" style="width:52px;height:52px;font-size:18px;">'+escapeHtml(initials(c.name))+'</div>';
+    html+='<div><div class="rc-modal-h">'+escapeHtml(c.name)+'</div><div class="rc-modal-sub">'+escapeHtml(c.gender||'')+' · '+escapeHtml(c.age||'-')+'ឆ្នាំ · '+escapeHtml((villageByCode[c.villageCode]||{}).name||'')+'</div></div>';
+    html+='</div>';
+    CRITERIA.forEach(function(crit){
+      var f=st[crit.key];
+      var isNo=f.val==='No';
+      html+='<div class="rc-criterion'+(isNo?' is-no':'')+'" data-key="'+crit.key+'">'+
+        '<div class="rc-criterion-top">'+
+          '<span class="rc-criterion-label"><span class="crit-chip">'+crit.icon+'</span>'+escapeHtml(crit.label)+'</span>'+
+          '<div class="rc-toggle-pair">'+
+            '<button type="button" class="rc-toggle-btn yes'+(!isNo?' is-on':'')+'" data-toggle="'+crit.key+'" data-val="Yes">មាន ✓</button>'+
+            '<button type="button" class="rc-toggle-btn no'+(isNo?' is-on':'')+'" data-toggle="'+crit.key+'" data-val="No">គ្មាន ✗</button>'+
+          '</div>'+
+        '</div>';
+      if(isNo){
+        html+='<div class="rc-criterion-reason"><label>⚠️ មូលហេតុ</label><textarea data-reason="'+crit.key+'" placeholder="សរសេរមូលហេតុ...">'+escapeHtml(f.reason)+'</textarea></div>';
+      }
+      html+='</div>';
+    });
+    html+='<div class="rc-modal-actions">'+
+      '<button type="button" class="rc-btn-primary" data-act="closeModal" data-c="'+escapeHtml(c.code)+'">'+
+        '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>'+
+        'បានរួចរាល់ · រក្សាទុក'+
+      '</button>'+
+    '</div>';
+    html+='</div></div>';
+    return html;
+  }
+
+  /* ── DONE VIEW ───────────────────────────────────────────────────── */
+  function renderDoneView(){
+    return '<div class="rc-card" style="text-align:center;padding:40px 24px;">'+
+      '<div class="rc-done-emoji">🎉</div>'+
+      '<div class="rc-section-title" style="font-size:17px;margin-bottom:6px;">ការតាមដានត្រូវបានបញ្ចប់!</div>'+
+      '<div class="rc-section-sub" style="margin-bottom:24px;">សូមអរគុណចំពោះការខិតខំរបស់អ្នក!</div>'+
+      '<button type="button" class="rc-continue-btn" data-act="newSession" style="max-width:320px;margin:0 auto;">'+
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.86"/></svg>'+
+        'ចាប់ផ្តើមការតាមដានថ្មី'+
+      '</button>'+
+    '</div>';
+  }
+
+  /* ── ADMIN VIEW ──────────────────────────────────────────────────── */
+  var adminCache=null;
+  // Pulls every CVC's visit records live from the shared Firestore store —
+  // the SAME sd:fieldmon:v1:... documents the dashboard's own "Field
+  // Monitoring" tab reads — so admin sees everyone's data, not just what
+  // happens to be cached on this one device.
+  function loadAdminData(){
+    state.busy=true;render();
+    window.storage.get('sd:fieldmon:idx:v1', true).then(function(res){
+      var idx = (res && res.value) ? JSON.parse(res.value) : {};
+      var keys=[];
+      Object.keys(idx).forEach(function(month){
+        Object.keys(idx[month]).forEach(function(villageCode){
+          var v = idx[month][villageCode];
+          Object.keys(v.cvcs||{}).forEach(function(cvcCode){
+            keys.push('sd:fieldmon:v1:'+month+':'+villageCode+':'+cvcCode);
+          });
+        });
+      });
+      return Promise.all(keys.map(function(k){
+        return window.storage.get(k, true).catch(function(){return null;});
+      }));
+    }).then(function(results){
+      var items=[];
+      (results||[]).forEach(function(res){
+        if(!res || !res.value) return;
+        try{ (JSON.parse(res.value)||[]).forEach(function(r){ items.push(r); }); }catch(e){}
+      });
+      adminCache=items.sort(function(a,b){return(b.submittedAt||'').localeCompare(a.submittedAt||'');});
+      state.busy=false;render();
+    }).catch(function(){
+      adminCache=[]; state.busy=false; render();
+    });
+  }
+
+  /* ── CVC MANAGEMENT (admin only) ────────────────────────────────────
+     Everything here writes straight to KEY_CVCMAP (and this app's own
+     KEY_RCMON_USERS) in Firestore — the exact same document the dashboard's
+     Settings → Village → CVC Assignment table reads/writes — so a change
+     made here shows up in the dashboard immediately, and vice versa. */
+  function cvcNamesList(){
+    return Array.from(new Set(Object.values(DB_CVC_MAP_CACHE||{}).filter(Boolean))).sort(function(a,b){return a.localeCompare(b);});
+  }
+  function villagesMissingCvc(){
+    return DB.villages.filter(function(v){
+      var hasCvc = !!DB_CVC_MAP_CACHE[v.name];
+      var hasKids = (childrenByVillage[v.code]||[]).length>0;
+      return !hasCvc && hasKids;
+    });
+  }
+  function villagesForCvcName(name){
+    return Object.keys(DB_CVC_MAP_CACHE).filter(function(v){return DB_CVC_MAP_CACHE[v]===name;});
+  }
+  function cvcUserByCode(code){ return CVC_USERS.filter(function(u){return u.code===code;})[0]||null; }
+
+  // Assigns (or creates) a CVC for one village that currently has none —
+  // covers "RC added new without a CVC".
+  function assignCvcToVillage(villageName, cvcName, username, password){
+    state.busy=true; render();
+    var map = Object.assign({}, DB_CVC_MAP_CACHE);
+    map[villageName] = cvcName;
+    return saveCvcMap(map).then(function(){
+      var code = slugCode(cvcName);
+      if(username){
+        CVC_USERS = CVC_USERS.filter(function(u){return u.code!==code;});
+        CVC_USERS.push({code:code, cvcName:cvcName, username:username, password:password||''});
+        return saveCvcUsers();
+      }
+    }).then(function(){
+      state.busy=false; state.cvcManageOpen={type:null,key:null};
+      showToast('បានកំណត់ CVC សម្រាប់ភូមិនេះ ✓');
+      return loadDataFromSheet({silent:true});
+    }).catch(function(err){
+      state.busy=false; render();
+      showToast('មិនអាចរក្សាទុកបានទេ៖ '+(err&&err.message?err.message:''),true);
+    });
+  }
+
+  // Renames a CVC everywhere at once (all villages they cover) and updates
+  // their account's username/password in the same step.
+  function renameCvc(oldName, newName, username, password){
+    state.busy=true; render();
+    var map = Object.assign({}, DB_CVC_MAP_CACHE);
+    Object.keys(map).forEach(function(v){ if(map[v]===oldName) map[v]=newName; });
+    var oldCode=slugCode(oldName), newCode=slugCode(newName);
+    return saveCvcMap(map).then(function(){
+      CVC_USERS = CVC_USERS.filter(function(u){return u.code!==oldCode && u.code!==newCode;});
+      CVC_USERS.push({code:newCode, cvcName:newName, username:username||'', password:password||''});
+      return saveCvcUsers();
+    }).then(function(){
+      state.busy=false; state.cvcManageOpen={type:null,key:null};
+      showToast('បានធ្វើបច្ចុប្បន្នភាព CVC ✓');
+      return loadDataFromSheet({silent:true});
+    }).catch(function(err){
+      state.busy=false; render();
+      showToast('មិនអាចរក្សាទុកបានទេ៖ '+(err&&err.message?err.message:''),true);
+    });
+  }
+
+  // Removes a CVC who stopped working. Requires a replacement CVC name for
+  // EVERY village they covered (reassignMap: villageName -> newCvcName),
+  // applied immediately — no village is ever left silently unassigned by
+  // this action, per how this app is meant to be used.
+  function deleteCvc(name, reassignMap){
+    var villages = villagesForCvcName(name);
+    for(var i=0;i<villages.length;i++){
+      if(!reassignMap[villages[i]] || !String(reassignMap[villages[i]]).trim()){
+        showToast('សូមជ្រើសរើស CVC ថ្មីសម្រាប់ភូមិទាំងអស់ជាមុនសិន · Pick a replacement CVC for every village first',true);
+        return Promise.resolve();
+      }
+    }
+    state.busy=true; render();
+    var map = Object.assign({}, DB_CVC_MAP_CACHE);
+    villages.forEach(function(v){ map[v]=reassignMap[v]; });
+    var code=slugCode(name);
+    return saveCvcMap(map).then(function(){
+      CVC_USERS = CVC_USERS.filter(function(u){return u.code!==code;});
+      return saveCvcUsers();
+    }).then(function(){
+      state.busy=false; state.cvcManageOpen={type:null,key:null};
+      showToast('បានលុប CVC ហើយចាត់តាំងភូមិឡើងវិញរួចរាល់ ✓');
+      return loadDataFromSheet({silent:true});
+    }).catch(function(err){
+      state.busy=false; render();
+      showToast('មិនអាចលុបបានទេ៖ '+(err&&err.message?err.message:''),true);
+    });
+  }
+
+  function renderCvcManageView(){
+    var open = state.cvcManageOpen || {type:null,key:null};
+    var names = cvcNamesList();
+    var html = '<div class="rc-card">';
+    html += '<div class="rc-admin-bar"><div><div class="rc-section-title" style="margin-bottom:2px;">👥 គ្រប់គ្រង CVC · Manage CVCs</div>'+
+      '<div class="rc-section-sub" style="margin-bottom:0;">បន្ថែម · ប្តូរឈ្មោះ · លុប CVC — ត្រូវគ្នាដោយផ្ទាល់ជាមួយ Dashboard</div></div>'+
+      '<button type="button" class="rc-export-btn" data-act="cvcBack">← ត្រឡប់</button></div>';
+    if(state.busy) html += '<div class="rc-loading"><span class="rc-spin"></span> ...</div></div>';
+    if(!state.busy){
+      // ── Missing CVC ──
+      var missing = villagesMissingCvc();
+      html += '<div class="rc-section-title" style="margin-top:14px;">⚠️ ភូមិដែលមិនទាន់មាន CVC · Villages without a CVC ('+missing.length+')</div>';
+      if(!missing.length){ html += '<div class="rc-empty" style="padding:12px 0;">គ្រប់ភូមិមាន CVC ហើយ · Every village with RCs has a CVC.</div>'; }
+      missing.forEach(function(v){
+        var kidCount = (childrenByVillage[v.code]||[]).length;
+        html += '<div class="rc-cvc-row"><div><b>'+escapeHtml(v.name)+'</b><span class="rc-cvc-sub">'+kidCount+' កុមារគ្មាន CVC · RCs with no CVC</span></div>';
+        if(open.type==='assign' && open.key===v.code){
+          html += '<div class="rc-cvc-form">'+
+            '<select id="cvc-assign-select-'+v.code+'"><option value="__new__">+ CVC ថ្មី · New CVC</option>'+names.map(function(n){return '<option value="'+escapeHtml(n)+'">'+escapeHtml(n)+'</option>';}).join('')+'</select>'+
+            '<input type="text" id="cvc-assign-newname-'+v.code+'" placeholder="ឈ្មោះ CVC ថ្មី · New CVC name"/>'+
+            '<input type="text" id="cvc-assign-username-'+v.code+'" placeholder="ឈ្មោះអ្នកប្រើ (សម្រាប់ CVC ថ្មី) · Username"/>'+
+            '<input type="password" id="cvc-assign-password-'+v.code+'" placeholder="ពាក្យសម្ងាត់ · Password"/>'+
+            '<div style="display:flex;gap:8px;"><button type="button" class="rc-login-btn" style="flex:1;" data-act="confirmAssign" data-v="'+v.code+'" data-vname="'+escapeHtml(v.name)+'">រក្សាទុក · Save</button>'+
+            '<button type="button" class="rc-export-btn" data-act="cancelCvcForm">បោះបង់</button></div>'+
+          '</div>';
+        } else {
+          html += '<button type="button" class="rc-export-btn" data-act="openAssign" data-v="'+v.code+'">+ បន្ថែម CVC · Add CVC</button>';
+        }
+        html += '</div>';
+      });
+      // ── Existing CVCs ──
+      html += '<div class="rc-section-title" style="margin-top:22px;">👤 CVC បច្ចុប្បន្ន · Current CVCs ('+names.length+')</div>';
+      if(!names.length){ html += '<div class="rc-empty" style="padding:12px 0;">មិនទាន់មាន CVC ទេ។</div>'; }
+      names.forEach(function(n){
+        var code = slugCode(n);
+        var vills = villagesForCvcName(n);
+        var acct = cvcUserByCode(code);
+        html += '<div class="rc-cvc-row"><div><b>'+escapeHtml(n)+'</b><span class="rc-cvc-sub">'+vills.length+' ភូមិ · villages'+(acct?' · @'+escapeHtml(acct.username):' · មិនទាន់មានគណនី')+'</span></div>';
+        if(open.type==='rename' && open.key===code){
+          html += '<div class="rc-cvc-form">'+
+            '<input type="text" id="cvc-rename-name-'+code+'" value="'+escapeHtml(n)+'" placeholder="ឈ្មោះ CVC · CVC name"/>'+
+            '<input type="text" id="cvc-rename-username-'+code+'" value="'+escapeHtml(acct?acct.username:'')+'" placeholder="ឈ្មោះអ្នកប្រើ · Username"/>'+
+            '<input type="password" id="cvc-rename-password-'+code+'" value="'+escapeHtml(acct?acct.password:'')+'" placeholder="ពាក្យសម្ងាត់ · Password"/>'+
+            '<div style="display:flex;gap:8px;"><button type="button" class="rc-login-btn" style="flex:1;" data-act="confirmRename" data-cvc="'+code+'" data-old="'+escapeHtml(n)+'">រក្សាទុក · Save</button>'+
+            '<button type="button" class="rc-export-btn" data-act="cancelCvcForm">បោះបង់</button></div>'+
+          '</div>';
+        } else if(open.type==='delete' && open.key===code){
+          html += '<div class="rc-cvc-form"><div class="rc-cvc-sub" style="margin-bottom:6px;">ជ្រើសរើស CVC ថ្មីសម្រាប់ភូមិនីមួយៗ · Pick a replacement CVC for each village:</div>';
+          vills.forEach(function(vName){
+            var vCode=slugCode(vName);
+            html += '<div style="margin-bottom:6px;"><div style="font-size:11.5px;font-weight:700;margin-bottom:3px;">'+escapeHtml(vName)+'</div>'+
+              '<select id="cvc-reassign-'+code+'-'+vCode+'" data-reassign-village="'+escapeHtml(vName)+'" class="cvc-reassign-'+code+'">'+
+              '<option value="">— ជ្រើសរើស · choose —</option>'+
+              names.filter(function(x){return x!==n;}).map(function(x){return '<option value="'+escapeHtml(x)+'">'+escapeHtml(x)+'</option>';}).join('')+
+              '<option value="__new__">+ CVC ថ្មី · New CVC…</option>'+
+              '</select>'+
+              '<input type="text" style="margin-top:4px;" id="cvc-reassign-new-'+code+'-'+vCode+'" placeholder="ឈ្មោះ CVC ថ្មី (បើជ្រើស + ថ្មី) · New CVC name"/>'+
+            '</div>';
+          });
+          html += '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" class="rc-login-btn" style="flex:1;background:#b3261e;" data-act="confirmDelete" data-cvc="'+code+'" data-old="'+escapeHtml(n)+'">លុប & ចាត់តាំងឡើងវិញ · Delete & reassign</button>'+
+            '<button type="button" class="rc-export-btn" data-act="cancelCvcForm">បោះបង់</button></div></div>';
+        } else {
+          html += '<div style="display:flex;gap:6px;">'+
+            '<button type="button" class="rc-export-btn" data-act="openRename" data-cvc="'+code+'">✎ កែប្រែ · Edit</button>'+
+            '<button type="button" class="rc-export-btn" data-act="openDelete" data-cvc="'+code+'">🛑 លុប · Delete</button>'+
+          '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function renderAdminView(){
+    var html='<div class="rc-card">';
+    html+='<div class="rc-admin-bar">'+
+      '<div><div class="rc-section-title" style="margin-bottom:2px;">📊 ទិន្នន័យតាមដានសរុប</div><div class="rc-section-sub" style="margin-bottom:0;">កំណត់ត្រាទាំងអស់</div></div>'+
+      '<div style="display:flex;gap:8px;">'+
+        '<button type="button" class="rc-export-btn" data-act="cvcManage">👥 គ្រប់គ្រង CVC</button>'+
+        '<button type="button" class="rc-export-btn" data-act="refreshSheetData"'+(state.dataLoading?' disabled':'')+'>'+(state.dataLoading?'<span class="rc-spin"></span>':'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.86"/></svg>')+' ទាញយកឡើងវិញ</button>'+
+        '<button type="button" class="rc-export-btn" data-act="exportCsv"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> CSV</button>'+
+      '</div>'+
+    '</div>';
+    if(state.busy){html+='<div class="rc-loading"><span class="rc-spin"></span> ...</div></div>';return html;}
+    var items=adminCache||[];
+    var uniqueChildren={};items.forEach(function(i){uniqueChildren[i.childCode]=1;});
+    var issueCount=0;items.forEach(function(i){CRITERIA.forEach(function(c){if(i[c.key]==='No')issueCount++;});});
+    html+='<div class="rc-stat-row">'+
+      '<div class="rc-stat"><b>'+items.length+'</b><span>កំណត់ត្រា</span></div>'+
+      '<div class="rc-stat"><b>'+Object.keys(uniqueChildren).length+'</b><span>កុមារ</span></div>'+
+      '<div class="rc-stat"><b>'+issueCount+'</b><span>បញ្ហា</span></div>'+
+      '<div class="rc-stat"><b>'+DB.children.length+'</b><span>កុមារសរុប</span></div>'+
+    '</div>';
+    if(items.length===0){html+='<div class="rc-empty">មិនទាន់មានកំណត់ត្រា</div></div>';return html;}
+    html+='<div class="rc-table-wrap"><table class="rc-table"><thead><tr>'+
+      '<th>ថ្ងៃ</th><th>ភូមិ</th><th>ស្ម័គ្រចិត្ត</th><th>កុមារ</th><th>ប្រធានបទ</th>'+
+      '<th>📅</th><th>🌿</th><th>📖</th><th>🛡️</th><th>🤝</th><th>មូលហេតុ</th>'+
+    '</tr></thead><tbody>';
+    items.forEach(function(i){
+      var reasons=[];CRITERIA.forEach(function(c){if(i[c.key]==='No'&&i[c.key+'Reason'])reasons.push(c.label+': '+i[c.key+'Reason']);});
+      html+='<tr><td>'+fmtDate(i.date)+'</td><td>'+escapeHtml(i.villageName)+'</td><td>'+escapeHtml(i.volunteerName)+'</td>'+
+        '<td>'+escapeHtml(i.childName)+'</td><td>'+escapeHtml((i.topics||[]).join('; '))+'</td>'+
+        '<td>'+escapeHtml(i.attendance)+'</td><td>'+escapeHtml(i.health)+'</td><td>'+escapeHtml(i.education)+'</td>'+
+        '<td>'+escapeHtml(i.protection)+'</td><td>'+escapeHtml(i.participation)+'</td>'+
+        '<td>'+escapeHtml(reasons.join(' | '))+'</td></tr>';
+    });
+    html+='</tbody></table></div></div>';
+    return html;
+  }
+
+  function exportCsv(){
+    var items=adminCache||[];
+    var rows=[['Date','Village','VillageCode','Volunteer','VolunteerCode','ChildCode','ChildName','Topics','Attendance','AttendanceReason','Health','HealthReason','Education','EducationReason','Protection','ProtectionReason','Participation','ParticipationReason','SubmittedAt']];
+    items.forEach(function(i){rows.push([i.date,i.villageName,i.villageCode,i.volunteerName,i.volunteerCode,i.childCode,i.childName,(i.topics||[]).join('; '),i.attendance,(i.attendanceReason||'').replace(/\n/g,' '),i.health,(i.healthReason||'').replace(/\n/g,' '),i.education,(i.educationReason||'').replace(/\n/g,' '),i.protection,(i.protectionReason||'').replace(/\n/g,' '),i.participation,(i.participationReason||'').replace(/\n/g,' '),i.submittedAt]);});
+    var csv=rows.map(function(r){return r.map(function(v){var s=String(v==null?'':v);if(/[",\n]/.test(s))s='"'+s.replace(/"/g,'""')+'"';return s;}).join(',');}).join('\n');
+    var blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);var a=document.createElement('a');
+    a.href=url;a.download='rc_monitoring_export.csv';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  }
+
+  /* ── BIND EVENTS ─────────────────────────────────────────────────── */
+  function bind(){
+    root.querySelectorAll('[data-bind="villageSearch"]').forEach(function(el){
+      el.addEventListener('input',function(){state.villageSearch=el.value;render();preserveFocus('villageSearch');});
+    });
+    root.querySelectorAll('[data-bind="rcSearch"]').forEach(function(el){
+      el.addEventListener('input',function(){state.rcSearch=el.value;render();preserveFocus('rcSearch');});
+    });
+    root.querySelectorAll('[data-bind="sortMode"]').forEach(function(el){
+      el.addEventListener('change',function(){state.sortMode=el.value;render();});
+    });
+    root.querySelectorAll('[data-act="commune"]').forEach(function(el){
+      el.addEventListener('click',function(){state.communeFilter=el.getAttribute('data-c');render();});
+    });
+    root.querySelectorAll('[data-act="village"]').forEach(function(el){
+      el.addEventListener('click',function(){pickVillage(el.getAttribute('data-v'));});
+    });
+    root.querySelectorAll('[data-act="volunteer"]').forEach(function(el){
+      el.addEventListener('click',function(){pickVolunteer(el.getAttribute('data-vol'));});
+    });
+    root.querySelectorAll('[data-act="go"]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var t=el.getAttribute('data-target');
+        if(t==='village')goVillage();
+        else if(t==='volunteer'){state.view='volunteer';render();}
+        else if(t==='session'){state.view='session';render();}
+        else if(t==='village_rc'){state.view='village_rc';state.rcSearch='';render();}
+      });
+    });
+    root.querySelectorAll('[data-act="viewRc"]').forEach(function(el){
+      el.addEventListener('click',function(){state.rcDetailCode=el.getAttribute('data-c');state.view='rc_detail';render();});
+    });
+    root.querySelectorAll('[data-act="admin"]').forEach(function(el){
+      el.addEventListener('click',function(){
+        if(state.role!=='admin')return;
+        if(state.view==='admin'){state.view=state.volunteerCode?'children':(state.villageCode?'volunteer':'village');render();}
+        else openAdmin();
+      });
+    });
+    root.querySelectorAll('[data-act="logout"]').forEach(function(el){el.addEventListener('click',logout);});
+    root.querySelectorAll('[data-topic]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var idx=parseInt(el.getAttribute('data-topic'),10);
+        var t=DB.topics[idx];
+        var pos=state.sessionTopics.indexOf(t);
+        if(pos===-1)state.sessionTopics.push(t);else state.sessionTopics.splice(pos,1);
+        render();
+      });
+    });
+    var sessDateEl=document.getElementById('rc-session-date');
+    if(sessDateEl) sessDateEl.addEventListener('change',function(){state.sessionDate=sessDateEl.value;render();});
+    var sessContinueEl=document.getElementById('rc-session-continue');
+    if(sessContinueEl) sessContinueEl.addEventListener('click',continueToChildren);
+    root.querySelectorAll('[data-act="openChild"]').forEach(function(el){
+      el.addEventListener('click',function(){state.modalChild=el.getAttribute('data-c');render();});
+    });
+    root.querySelectorAll('[data-act="closeModal"]').forEach(function(el){
+      el.addEventListener('click',function(){closeChildModal(el.getAttribute('data-c'));});
+    });
+    root.querySelectorAll('[data-act="overlay"]').forEach(function(el){
+      el.addEventListener('click',function(e){if(e.target===el)closeChildModal(state.modalChild);});
+    });
+    root.querySelectorAll('[data-stop]').forEach(function(el){
+      el.addEventListener('click',function(e){e.stopPropagation();});
+    });
+    root.querySelectorAll('[data-toggle]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var key=el.getAttribute('data-toggle'),val=el.getAttribute('data-val'),code=state.modalChild;
+        if(!state.childStatus[code])state.childStatus[code]=defaultStatus();
+        state.childStatus[code][key].val=val;
+        if(val==='Yes')state.childStatus[code][key].reason='';
+        render();
+      });
+    });
+    root.querySelectorAll('[data-reason]').forEach(function(el){
+      el.addEventListener('input',function(){
+        var key=el.getAttribute('data-reason'),code=state.modalChild;
+        if(!state.childStatus[code])state.childStatus[code]=defaultStatus();
+        state.childStatus[code][key].reason=el.value;
+      });
+    });
+    var submitBtn=document.getElementById('rc-submit-session');
+    if(submitBtn) submitBtn.addEventListener('click',finishVisit);
+    root.querySelectorAll('[data-act="newSession"]').forEach(function(el){
+      el.addEventListener('click',startNewSession);
+    });
+    root.querySelectorAll('[data-act="exportCsv"]').forEach(function(el){
+      el.addEventListener('click',exportCsv);
+    });
+    root.querySelectorAll('[data-act="refreshSheetData"]').forEach(function(el){
+      el.addEventListener('click',function(){loadDataFromSheet();});
+    });
+    root.querySelectorAll('[data-act="cvcManage"]').forEach(function(el){
+      el.addEventListener('click',function(){state.view='cvcManage';state.cvcManageOpen={type:null,key:null};render();});
+    });
+    root.querySelectorAll('[data-act="cvcBack"]').forEach(function(el){
+      el.addEventListener('click',function(){state.view='admin';render();});
+    });
+    root.querySelectorAll('[data-act="cancelCvcForm"]').forEach(function(el){
+      el.addEventListener('click',function(){state.cvcManageOpen={type:null,key:null};render();});
+    });
+    root.querySelectorAll('[data-act="openAssign"]').forEach(function(el){
+      el.addEventListener('click',function(){state.cvcManageOpen={type:'assign',key:el.getAttribute('data-v')};render();});
+    });
+    root.querySelectorAll('[data-act="openRename"]').forEach(function(el){
+      el.addEventListener('click',function(){state.cvcManageOpen={type:'rename',key:el.getAttribute('data-cvc')};render();});
+    });
+    root.querySelectorAll('[data-act="openDelete"]').forEach(function(el){
+      el.addEventListener('click',function(){state.cvcManageOpen={type:'delete',key:el.getAttribute('data-cvc')};render();});
+    });
+    root.querySelectorAll('[data-act="confirmAssign"]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var vCode=el.getAttribute('data-v'), vName=el.getAttribute('data-vname');
+        var sel=document.getElementById('cvc-assign-select-'+vCode);
+        var chosen=sel.value;
+        var name = chosen==='__new__' ? (document.getElementById('cvc-assign-newname-'+vCode).value||'').trim() : chosen;
+        if(!name){showToast('សូមបញ្ចូលឈ្មោះ CVC · Enter a CVC name',true);return;}
+        var username=(document.getElementById('cvc-assign-username-'+vCode).value||'').trim();
+        var password=document.getElementById('cvc-assign-password-'+vCode).value||'';
+        assignCvcToVillage(vName, name, username, password);
+      });
+    });
+    root.querySelectorAll('[data-act="confirmRename"]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var code=el.getAttribute('data-cvc'), oldName=el.getAttribute('data-old');
+        var newName=(document.getElementById('cvc-rename-name-'+code).value||'').trim();
+        if(!newName){showToast('សូមបញ្ចូលឈ្មោះ CVC · Enter a CVC name',true);return;}
+        var username=(document.getElementById('cvc-rename-username-'+code).value||'').trim();
+        var password=document.getElementById('cvc-rename-password-'+code).value||'';
+        renameCvc(oldName, newName, username, password);
+      });
+    });
+    root.querySelectorAll('[data-act="confirmDelete"]').forEach(function(el){
+      el.addEventListener('click',function(){
+        var code=el.getAttribute('data-cvc'), oldName=el.getAttribute('data-old');
+        var selects=root.querySelectorAll('.cvc-reassign-'+code);
+        var reassignMap={};
+        var ok=true;
+        selects.forEach(function(sel){
+          var vName=sel.getAttribute('data-reassign-village');
+          var val=sel.value;
+          if(val==='__new__'){
+            var vCode=slugCode(vName);
+            var newName=(document.getElementById('cvc-reassign-new-'+code+'-'+vCode).value||'').trim();
+            if(!newName) ok=false;
+            reassignMap[vName]=newName;
+          } else if(val){
+            reassignMap[vName]=val;
+          } else { ok=false; }
+        });
+        if(!ok){showToast('សូមជ្រើសរើស ឬបញ្ចូល CVC សម្រាប់ភូមិទាំងអស់ · Fill in a CVC for every village',true);return;}
+        deleteCvc(oldName, reassignMap);
+      });
+    });
+  }
+  function preserveFocus(bindKey){
+    var fresh=root.querySelector('[data-bind="'+bindKey+'"]');
+    if(fresh){fresh.focus();var v=fresh.value;fresh.value='';fresh.value=v;}
+  }
+
+  checkAuth();
+
+  // Keep this app's view of the dashboard's data live: re-pull periodically,
+  // and immediately whenever the tab/app comes back into view (e.g. the
+  // admin just added a CVC on another device or in the dashboard itself).
+  setInterval(function(){
+    if(state.authed && !state.dataLoading) loadDataFromSheet({silent:true});
+  }, 45000);
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='visible' && state.authed && !state.dataLoading) loadDataFromSheet({silent:true});
+  });
+})();
+</script>
+
+<!-- ══ PWA INSTALL PROMPT ══ -->
+<script>
+(function(){
+  var deferredPrompt = null;
+  var banner = document.getElementById('pwa-install-banner');
+
+  window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (banner) banner.style.display = 'flex';
+  });
+
+  document.getElementById('pwa-install-btn').addEventListener('click', function() {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(function() {
+      deferredPrompt = null;
+      if (banner) banner.style.display = 'none';
+    });
+  });
+
+  document.getElementById('pwa-dismiss-btn').addEventListener('click', function() {
+    if (banner) banner.style.display = 'none';
+  });
+
+  // Hide banner if already installed
+  if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
+    if (banner) banner.style.display = 'none';
+  }
+})();
+</script>
+
+<!-- ══ FLYING STARS ENGINE ══════════════════════════════════════════ -->
+<script>
+(function(){
+  var canvas, ctx, stars=[], raf, heroEl;
+  var W=0, H=0;
+
+  /* ── Star shapes ─────────────────────────────────── */
+  function drawStar(cx,cy,r,pts,inner,rot){
+    ctx.beginPath();
+    for(var i=0;i<pts*2;i++){
+      var angle=rot + i*Math.PI/pts;
+      var radius=(i%2===0)?r:inner;
+      ctx.lineTo(cx+Math.cos(angle)*radius, cy+Math.sin(angle)*radius);
+    }
+    ctx.closePath();
+  }
+  function drawSparkle(cx,cy,r){
+    // 4-point diamond sparkle
+    ctx.beginPath();
+    ctx.moveTo(cx, cy-r);
+    ctx.quadraticCurveTo(cx+r*0.15, cy-r*0.15, cx+r, cy);
+    ctx.quadraticCurveTo(cx+r*0.15, cy+r*0.15, cx, cy+r);
+    ctx.quadraticCurveTo(cx-r*0.15, cy+r*0.15, cx-r, cy);
+    ctx.quadraticCurveTo(cx-r*0.15, cy-r*0.15, cx, cy-r);
+    ctx.closePath();
+  }
+
+  /* ── Create a star particle ──────────────────────── */
+  function makeStar(){
+    var type=Math.random()<0.5?'star':(Math.random()<0.5?'sparkle':'dot');
+    var size=type==='dot'?(1+Math.random()*2):(3+Math.random()*7);
+    // start anywhere in hero, drift up and sideways
+    return{
+      x: Math.random()*W,
+      y: H + size + Math.random()*40,   // start just below hero bottom
+      vx: (Math.random()-0.5)*0.6,
+      vy: -(0.4 + Math.random()*1.0),   // float upward
+      size: size,
+      type: type,
+      rot: Math.random()*Math.PI*2,
+      spin: (Math.random()-0.5)*0.03,
+      alpha: 0,
+      targetAlpha: 0.55 + Math.random()*0.45,
+      life: 0,
+      maxLife: 200 + Math.random()*300,
+      // colour: white, gold, or orange-amber
+      hue: Math.random()<0.5?'#ffffff':(Math.random()<0.5?'#ffd54f':'#ffab40'),
+      // trail
+      trail:[],
+    };
+  }
+
+  /* ── Resize handler ──────────────────────────────── */
+  function resize(){
+    if(!heroEl)return;
+    var rect=heroEl.getBoundingClientRect();
+    W=rect.width; H=rect.height;
+    canvas.width=W*window.devicePixelRatio;
+    canvas.height=H*window.devicePixelRatio;
+    canvas.style.width=W+'px';
+    canvas.style.height=H+'px';
+    ctx.scale(window.devicePixelRatio,window.devicePixelRatio);
+  }
+
+  /* ── Draw glow helper ────────────────────────────── */
+  function glow(r,color){
+    ctx.shadowBlur=r;
+    ctx.shadowColor=color;
+  }
+
+  /* ── Animation loop ──────────────────────────────── */
+  function tick(){
+    raf=requestAnimationFrame(tick);
+    if(!heroEl || !heroEl.isConnected){ stop(); return; }
+
+    ctx.clearRect(0,0,W,H);
+
+    // Spawn stars up to 38 particles
+    if(stars.length<38 && Math.random()<0.18) stars.push(makeStar());
+
+    stars=stars.filter(function(s){ return s.life<s.maxLife && s.y>-s.size*4; });
+
+    stars.forEach(function(s){
+      s.life++;
+      s.x+=s.vx;
+      s.y+=s.vy;
+      s.rot+=s.spin;
+
+      // fade in/out
+      var progress=s.life/s.maxLife;
+      if(progress<0.15) s.alpha=s.targetAlpha*(progress/0.15);
+      else if(progress>0.75) s.alpha=s.targetAlpha*((1-progress)/0.25);
+      else s.alpha=s.targetAlpha;
+
+      // gentle horizontal sway
+      s.x+=Math.sin(s.life*0.04)*0.25;
+
+      ctx.save();
+      ctx.globalAlpha=s.alpha;
+
+      if(s.type==='dot'){
+        glow(8,s.hue);
+        ctx.fillStyle=s.hue;
+        ctx.beginPath();
+        ctx.arc(s.x,s.y,s.size,0,Math.PI*2);
+        ctx.fill();
+        // inner bright core
+        ctx.shadowBlur=3;
+        ctx.fillStyle='#ffffff';
+        ctx.beginPath();
+        ctx.arc(s.x,s.y,s.size*0.4,0,Math.PI*2);
+        ctx.fill();
+      } else if(s.type==='sparkle'){
+        glow(14,s.hue);
+        ctx.fillStyle=s.hue;
+        drawSparkle(s.x,s.y,s.size);
+        ctx.fill();
+        ctx.shadowBlur=5;
+        ctx.fillStyle='#ffffff';
+        drawSparkle(s.x,s.y,s.size*0.4);
+        ctx.fill();
+      } else {
+        // 5-point star
+        glow(12,s.hue);
+        ctx.fillStyle=s.hue;
+        drawStar(s.x,s.y,s.size,5,s.size*0.42,s.rot);
+        ctx.fill();
+        // bright core
+        ctx.shadowBlur=4;
+        ctx.fillStyle='#ffffff';
+        drawStar(s.x,s.y,s.size*0.38,5,s.size*0.18,s.rot);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    });
+  }
+
+  function stop(){
+    if(raf) cancelAnimationFrame(raf);
+    raf=null;
+  }
+
+  /* ── Mount canvas into hero whenever hero exists ─── */
+  function mount(){
+    heroEl=document.querySelector('.rc-hero');
+    if(!heroEl){
+      // hero not in DOM yet; keep watching
+      setTimeout(mount,200);
+      return;
+    }
+    // Check if canvas already mounted
+    if(heroEl.querySelector('#rc-star-canvas')){
+      // Re-check hero still in DOM
+      if(!raf) tick();
+      return;
+    }
+    canvas=document.createElement('canvas');
+    canvas.id='rc-star-canvas';
+    heroEl.insertBefore(canvas,heroEl.firstChild);
+    ctx=canvas.getContext('2d');
+    resize();
+    window.addEventListener('resize',function(){
+      // re-find hero (it may have re-rendered)
+      heroEl=document.querySelector('.rc-hero');
+      if(heroEl&&canvas&&heroEl.contains(canvas)) resize();
+    });
+    if(raf) cancelAnimationFrame(raf);
+    tick();
+  }
+
+  /* ── Re-mount after every render (hero re-created in DOM) ── */
+  // Use MutationObserver to watch for hero re-creation
+  var appEl=document.getElementById('rc-app');
+  if(appEl){
+    var obs=new MutationObserver(function(){
+      heroEl=document.querySelector('.rc-hero');
+      if(heroEl && !heroEl.querySelector('#rc-star-canvas')){
+        stop();
+        stars=[];
+        mount();
+      }
+    });
+    obs.observe(appEl,{childList:true,subtree:true});
+  }
+  // Initial mount after a brief delay
+  setTimeout(mount,300);
+})();
+</script>
+</body>
+</html>
